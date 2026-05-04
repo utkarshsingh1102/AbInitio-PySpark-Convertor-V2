@@ -162,6 +162,50 @@ export async function convertDml(dml: string): Promise<{ schemas: DmlSchemaResul
   return r.json();
 }
 
+// ── Schema → DML translators (Hive / COBOL / XML) ──────────────────────────
+//
+// Each accepts a single source-format string and returns DML text that the
+// existing DML Playground can consume.
+
+export type ToDmlResponse = {
+  record_name: string;
+  dml: string;
+  extras: Record<string, any>;
+};
+
+export async function hiveToDml(ddl: string): Promise<ToDmlResponse> {
+  const r = await fetch(`${API}/hive/to-dml`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ddl }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function cobolToDml(copybook: string): Promise<ToDmlResponse> {
+  const r = await fetch(`${API}/cobol/to-dml`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ copybook }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function xmlToDml(
+  xml: string,
+  mode: "auto" | "sample" | "xsd" = "auto",
+): Promise<ToDmlResponse> {
+  const r = await fetch(`${API}/xml/to-dml`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ xml, mode }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export function executeStream(
   pipeline_id: string,
   onLine: (line: string) => void,

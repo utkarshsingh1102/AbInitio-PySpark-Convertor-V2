@@ -1268,3 +1268,491 @@ def test_nested_record_struct_code_emission():
     obj = eval(code, ns)
     inner = {f.name: f for f in obj.fields}
     assert isinstance(inner["address"].dataType, StructType)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Full DML reference-grammar coverage — Phase 1 + Phase 2 tests.
+#
+# Phase 1: brace-close nested record · `[int]` unbounded vector ·
+#          optional trailing `;` after top-level `end`.
+# Phase 2: `type X = record … end;` aliases · annotations · encoding
+#          prefixes · `metadata type = record …` · `integer(N)` byte width ·
+#          `decimal("format")` form.
+# ════════════════════════════════════════════════════════════════════════════
+
+
+# ── Phase 1: brace-close + [int] ────────────────────────────────────────────
+
+
+def test_brace_close_nested_record():
+    """``record … } NAME;`` — generator-emitted brace-close form."""
+    src = (
+        'record\n'
+        '  string(",") id;\n'
+        '  record\n'
+        '    string(",") street;\n'
+        '    string(",") city;\n'
+        '  } address;\n'
+        'end;\n'
+    )
+    s = parse_dml_string(src)
+    rec = next(iter(s.values()))
+    addr = next(f for f in rec["fields"] if f["name"] == "address")
+    assert addr["type"] == "struct"
+    assert [f["name"] for f in addr["fields"]] == ["street", "city"]
+
+
+def test_brace_close_with_array_suffix():
+    """``} projects[5];`` — fixed-length array after brace-close."""
+    src = (
+        'record\n'
+        '  record\n'
+        '    string(",") proj_id;\n'
+        '  } projects[5];\n'
+        'end;\n'
+    )
+    s = parse_dml_string(src)
+    rec = next(iter(s.values()))
+    proj = rec["fields"][0]
+    assert proj["name"] == "projects"
+    assert proj["array"] is True
+    assert proj["array_length"] == 5
+
+
+def test_brace_close_with_depending_on_array():
+    """``} projects[count];`` — variable-length array depending on a field."""
+    src = (
+        'record\n'
+        '  integer(2) project_count;\n'
+        '  record\n'
+        '    string(4) proj_id;\n'
+        '  } projects[project_count];\n'
+        'end\n'
+    )
+    s = parse_dml_string(src)
+    rec = next(iter(s.values()))
+    proj = next(f for f in rec["fields"] if f["name"] == "projects")
+    assert proj["array"] is True
+    assert proj.get("depends_on") == "project_count"
+
+
+def test_brace_close_with_int_unbounded_array_before_name():
+    """``} [int] map_entries;`` — Hive-DML map idiom: brackets BEFORE name."""
+    src = (
+        'record\n'
+        '  record\n'
+        '    record\n'
+        '      string(",") key;\n'
+        '      string(",") value;\n'
+        '    } [int] entries;\n'
+        '  } meta_info;\n'
+        'end\n'
+    )
+    s = parse_dml_string(src)
+    rec = next(iter(s.values()))
+    meta = next(f for f in rec["fields"] if f["name"] == "meta_info")
+    entries = next(f for f in meta["fields"] if f["name"] == "entries")
+    assert entries["array"] is True
+    # Unbounded array: `array_length` key is absent (only set for fixed sizes).
+    assert "array_length" not in entries
+
+
+def test_int_unbounded_vector_marker():
+    """``string(",")[int] field;`` — `[int]` means unbounded vector."""
+    src = (
+        'record\n'
+        '  string(",")[int] tags;\n'
+        'end\n'
+    )
+    s = parse_dml_string(src)
+    rec = next(iter(s.values()))
+    tags = rec["fields"][0]
+    assert tags["name"] == "tags"
+    assert tags["array"] is True
+    # Unbounded array: `array_length` key is absent (only set for fixed sizes).
+    assert "array_length" not in tags
+
+
+def test_top_level_end_no_semicolon():
+    """Generator-emitted DML often omits the trailing `;` after final `end`."""
+    src = (
+        'record\n'
+        '  string(",") name;\n'
+        'end\n'  # no semicolon
+    )
+    s = parse_dml_string(src)
+    assert next(iter(s.values()))["fields"][0]["name"] == "name"
+
+
+def test_int_bracket_round_trips_to_array_type():
+    """`[int]` round-trips to `ArrayType(StringType())` in PySpark."""
+    try:
+        from pyspark.sql.types import ArrayType, StringType, StructType
+    except Exception:
+        pytest.skip("PySpark not installed")
+    from backend.parser.dml_parser import to_struct_type
+    src = 'record\n  string(",")[int] tags;\nend\n'
+    schema = next(iter(parse_dml_string(src).values()))
+    st = to_struct_type(schema)
+    assert isinstance(st, StructType)
+    assert isinstance(st.fields[0].dataType, ArrayType)
+    assert isinstance(st.fields[0].dataType.elementType, StringType)
+
+
+# ── Phase 2: encoding prefixes ──────────────────────────────────────────────
+
+
+def test_encoding_prefix_string():
+    """`utf8 string("¨") name;` — encoding prefix recorded, type unchanged."""
+    src = 'record\n  utf8 string(",") name;\nend\n'
+    s = parse_dml_string(src)
+    f = next(iter(s.values()))["fields"][0]
+    assert f["type"] == "string"
+    assert f.get("encoding") == "utf8"
+
+
+def test_encoding_prefix_decimal():
+    """`ascii decimal(5) emp_id;` — ascii-encoded decimal."""
+    src = 'record\n  ascii decimal(5) emp_id;\nend\n'
+    s = parse_dml_string(src)
+    f = next(iter(s.values()))["fields"][0]
+    assert f["type"] == "decimal"
+    assert f["args"] == [5]
+    assert f.get("encoding") == "ascii"
+
+
+def test_encoding_prefix_packed_decimal():
+    """`packed decimal(9,2) emp_salary;` — packed-decimal."""
+    src = 'record\n  packed decimal(9,2) salary;\nend\n'
+    s = parse_dml_string(src)
+    f = next(iter(s.values()))["fields"][0]
+    assert f["type"] == "decimal"
+    assert f["args"] == [9, 2]
+    assert f.get("encoding") == "packed"
+
+
+def test_encoding_prefix_top_level_record():
+    """`utf8 record … end` — leading prefix at top level is stripped."""
+    src = 'utf8 record\n  string(",") name;\nend\n'
+    s = parse_dml_string(src)
+    rec = next(iter(s.values()))
+    assert rec["fields"][0]["name"] == "name"
+
+
+# ── Phase 2: type aliases + UDT references ──────────────────────────────────
+
+
+def test_type_alias_declaration_and_reference():
+    """`type X = record … end;` declared once, referenced from a field."""
+    src = (
+        'type address_t = record\n'
+        '  string(",") street;\n'
+        '  string(",") city;\n'
+        'end;\n'
+        '\n'
+        'record\n'
+        '  string(",") name;\n'
+        '  address_t home;\n'
+        'end;\n'
+    )
+    s = parse_dml_string(src)
+    # The alias itself is NOT a top-level schema.
+    assert "address_t" not in s
+    # The using record IS a top-level schema with `home` inlined as struct.
+    rec = next(iter(s.values()))
+    home = next(f for f in rec["fields"] if f["name"] == "home")
+    assert home["type"] == "struct"
+    assert [f["name"] for f in home["fields"]] == ["street", "city"]
+    assert home.get("udt_name") == "address_t"
+
+
+def test_unknown_udt_errors():
+    """Referencing a never-declared type → hard error."""
+    src = (
+        'record\n'
+        '  string(",") name;\n'
+        '  unknown_t mystery;\n'
+        'end;\n'
+    )
+    with pytest.raises(ValueError, match="Unknown DML type"):
+        parse_dml_string(src)
+
+
+def test_type_alias_array_of_udt():
+    """``vehicle_info_t[int] Vehicle;`` — array of user-defined type."""
+    src = (
+        'type vehicle_t = record\n'
+        '  string(",") make;\n'
+        'end;\n'
+        '\n'
+        'record\n'
+        '  vehicle_t[int] Vehicles;\n'
+        'end;\n'
+    )
+    s = parse_dml_string(src)
+    rec = next(iter(s.values()))
+    vehicles = rec["fields"][0]
+    assert vehicles["type"] == "struct"
+    assert vehicles["array"] is True
+    assert vehicles.get("udt_name") == "vehicle_t"
+
+
+# ── Phase 2: annotations ────────────────────────────────────────────────────
+
+
+def test_single_annotation_skipped_and_stored():
+    """`@style="element"` parses, lands on field['annotations']."""
+    src = (
+        'record\n'
+        '  string(",") name @style="element";\n'
+        'end;\n'
+    )
+    s = parse_dml_string(src)
+    f = next(iter(s.values()))["fields"][0]
+    assert f["name"] == "name"
+    assert f.get("annotations") == {"style": "element"}
+
+
+def test_multi_annotation():
+    """`@style="attribute", name="type"` — comma-separated multi-annotation."""
+    src = (
+        'record\n'
+        '  string(",") vehicle_type @style="attribute", name="type";\n'
+        'end;\n'
+    )
+    s = parse_dml_string(src)
+    f = next(iter(s.values()))["fields"][0]
+    assert f.get("annotations") == {"style": "attribute", "name": "type"}
+
+
+def test_annotation_on_brace_close_record():
+    """`} Insured @style="element";` — annotation on a nested record."""
+    src = (
+        'record\n'
+        '  record\n'
+        '    string(",") name;\n'
+        '  } Insured @style="element";\n'
+        'end;\n'
+    )
+    s = parse_dml_string(src)
+    insured = next(iter(s.values()))["fields"][0]
+    assert insured["name"] == "Insured"
+    assert insured.get("annotations") == {"style": "element"}
+
+
+# ── Phase 2: integer alias + decimal format string ──────────────────────────
+
+
+def test_integer_byte_width_4():
+    """`integer(4)` → IntegerType."""
+    try:
+        from pyspark.sql.types import IntegerType
+    except Exception:
+        pytest.skip("PySpark not installed")
+    from backend.parser.dml_parser import to_struct_type
+    src = 'record\n  integer(4) year;\nend\n'
+    schema = next(iter(parse_dml_string(src).values()))
+    st = to_struct_type(schema)
+    assert isinstance(st.fields[0].dataType, IntegerType)
+
+
+def test_integer_byte_width_8():
+    """`integer(8)` → LongType (BIGINT)."""
+    try:
+        from pyspark.sql.types import LongType
+    except Exception:
+        pytest.skip("PySpark not installed")
+    from backend.parser.dml_parser import to_struct_type
+    src = 'record\n  integer(8) transaction_id;\nend\n'
+    schema = next(iter(parse_dml_string(src).values()))
+    st = to_struct_type(schema)
+    assert isinstance(st.fields[0].dataType, LongType)
+
+
+def test_decimal_format_string():
+    """`decimal(".2") amount;` → DecimalType(38, 2)."""
+    try:
+        from pyspark.sql.types import DecimalType
+    except Exception:
+        pytest.skip("PySpark not installed")
+    from backend.parser.dml_parser import to_struct_type
+    src = 'record\n  decimal(".2") premium;\nend\n'
+    schema = next(iter(parse_dml_string(src).values()))
+    st = to_struct_type(schema)
+    dt = st.fields[0].dataType
+    assert isinstance(dt, DecimalType)
+    assert (dt.precision, dt.scale) == (38, 2)
+
+
+# ── Phase 2: metadata keyword variant ───────────────────────────────────────
+
+
+def test_metadata_root_keyword():
+    """`metadata type = record … end;` parses as the root schema."""
+    src = (
+        'metadata type = record\n'
+        '  string(",") id @style="attribute";\n'
+        '  string(",") name;\n'
+        'end;\n'
+    )
+    s = parse_dml_string(src)
+    assert "metadata" in s
+    assert [f["name"] for f in s["metadata"]["fields"]] == ["id", "name"]
+
+
+# ── Real-world acceptance gates from real-dml.md ────────────────────────────
+
+
+REAL_DML_XML_ORDER = (
+    'utf8 record\n'
+    '  /* Mapping for the id attribute */\n'
+    '  decimal(",") id;\n'
+    '\n'
+    '  /* Mapping for the Customer element */\n'
+    '  string(",") Customer;\n'
+    '\n'
+    '  /* Mapping for the Items wrapper and nested Product elements */\n'
+    '  record\n'
+    '    string(",")[int] Product;\n'
+    '  } Items;\n'
+    '\n'
+    '  string(",") newline = "\\n";\n'
+    'end\n'
+)
+
+
+def test_real_dml_xml_order():
+    """Acceptance gate: full Example 1 (XML→DML, simple Order) parses."""
+    s = parse_dml_string(REAL_DML_XML_ORDER)
+    rec = next(iter(s.values()))
+    names = [f["name"] for f in rec["fields"]]
+    assert "id" in names and "Customer" in names and "Items" in names
+    items = next(f for f in rec["fields"] if f["name"] == "Items")
+    assert items["type"] == "struct"
+    product = items["fields"][0]
+    assert product["name"] == "Product"
+    assert product["array"] is True
+
+
+REAL_DML_COBOL_EMPLOYEE = (
+    '/* Generated from COBOL copybook */\n'
+    'record\n'
+    '  ascii decimal(5) emp_id;\n'
+    '  string(20) emp_name;\n'
+    '\n'
+    '  record\n'
+    '    string(10) emp_dept;\n'
+    '    packed decimal(9,2) emp_salary;\n'
+    '  } emp_details;\n'
+    '\n'
+    '  ascii decimal(2) project_count;\n'
+    '\n'
+    '  record\n'
+    '    string(4) proj_id;\n'
+    '  } projects[project_count];\n'
+    '\n'
+    '  string(1) newline = "\\n";\n'
+    'end\n'
+)
+
+
+def test_real_dml_cobol_employee():
+    """Acceptance gate: full Example 3 (COBOL→DML, employee record) parses."""
+    s = parse_dml_string(REAL_DML_COBOL_EMPLOYEE)
+    rec = next(iter(s.values()))
+    names = [f["name"] for f in rec["fields"]]
+    assert names[:3] == ["emp_id", "emp_name", "emp_details"]
+    salary = next(
+        f for f in next(d for d in rec["fields"] if d["name"] == "emp_details")["fields"]
+        if f["name"] == "emp_salary"
+    )
+    assert salary.get("encoding") == "packed"
+    projects = next(f for f in rec["fields"] if f["name"] == "projects")
+    assert projects["array"] is True
+    assert projects.get("depends_on") == "project_count"
+
+
+REAL_DML_HIVE_SALES = (
+    '/* Generated from Hive Table: sales_data */\n'
+    'record\n'
+    '  integer(8) transaction_id;\n'
+    '  string("\\001") customer_name;\n'
+    '  decimal(10,2) amount;\n'
+    '\n'
+    '  record\n'
+    '    string("\\001")[int] item;\n'
+    '  } items_list;\n'
+    '\n'
+    '  record\n'
+    '    record\n'
+    '      string("\\001") key;\n'
+    '      string("\\001") value;\n'
+    '    } [int] map_entries;\n'
+    '  } meta_info;\n'
+    '\n'
+    '  integer(4) year;\n'
+    '  integer(4) month;\n'
+    '\n'
+    '  string("\\n") newline;\n'
+    'end\n'
+)
+
+
+def test_real_dml_hive_sales():
+    """Acceptance gate: full Example 4 (Hive→DML, sales_data) parses."""
+    s = parse_dml_string(REAL_DML_HIVE_SALES)
+    rec = next(iter(s.values()))
+    names = [f["name"] for f in rec["fields"]]
+    assert "transaction_id" in names and "items_list" in names and "meta_info" in names
+    meta = next(f for f in rec["fields"] if f["name"] == "meta_info")
+    map_entries = next(f for f in meta["fields"] if f["name"] == "map_entries")
+    assert map_entries["array"] is True
+
+
+REAL_DML_XML_INSURANCE = (
+    '/* Generated by xml-to-dml utility */\n'
+    '\n'
+    'type policy_address_t = record\n'
+    '  string(",") Street @style="element";\n'
+    '  string(",") City @style="element";\n'
+    '  decimal(",") Zip @style="element";\n'
+    'end;\n'
+    '\n'
+    'type vehicle_info_t = record\n'
+    '  string(",") vehicle_type @style="attribute", name="type";\n'
+    '  string(",") Make @style="element";\n'
+    '  decimal(",") Year @style="element";\n'
+    '  decimal(".2") Premium @style="element";\n'
+    'end;\n'
+    '\n'
+    'metadata type = record\n'
+    '  string(",") id @style="attribute";\n'
+    '\n'
+    '  record\n'
+    '    string(",") Name @style="element";\n'
+    '    policy_address_t Address;\n'
+    '  } Insured @style="element";\n'
+    '\n'
+    '  record\n'
+    '    vehicle_info_t[int] Vehicle;\n'
+    '  } Vehicles @style="element";\n'
+    '\n'
+    '  string(",") newline = "\\n";\n'
+    'end;\n'
+)
+
+
+def test_real_dml_xml_insurance():
+    """Acceptance gate: full Example 2 (XML→DML, insurance policy) parses."""
+    s = parse_dml_string(REAL_DML_XML_INSURANCE)
+    assert "metadata" in s
+    rec = s["metadata"]
+    insured = next(f for f in rec["fields"] if f["name"] == "Insured")
+    assert insured["type"] == "struct"
+    address = next(f for f in insured["fields"] if f["name"] == "Address")
+    assert address["type"] == "struct"
+    assert address.get("udt_name") == "policy_address_t"
+    vehicles = next(f for f in rec["fields"] if f["name"] == "Vehicles")
+    vehicle = vehicles["fields"][0]
+    assert vehicle["array"] is True
+    assert vehicle.get("udt_name") == "vehicle_info_t"

@@ -8,7 +8,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..graph.client import Neo4jClient
-from .routes import convert, dml_playground, dml_visualizer, download, execute, graph, parse, upload
+from .routes import (
+    convert, dml_playground, dml_visualizer, download, execute, graph,
+    parse, schema_to_dml, upload,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -41,6 +44,7 @@ app.include_router(download.router)
 app.include_router(execute.router)
 app.include_router(dml_playground.router)
 app.include_router(dml_visualizer.router)
+app.include_router(schema_to_dml.router)
 
 
 @app.get("/health")
