@@ -41,6 +41,8 @@ _TOKEN_RE = re.compile(
         (?P<semi>;)                             |
         (?P<lbracket>\[)                        |
         (?P<rbracket>\])                        |
+        (?P<rbrace>\})                          |   # brace-close nested record
+        (?P<at>@)                               |   # @style="..." annotations
         (?P<eq2>==)                             |   # multi-char ops first
         (?P<neq>!=)                             |
         (?P<lte><=)                             |
@@ -64,7 +66,14 @@ _COMPARISON_OP_TEXT = {
 
 
 def _unescape_dqstring(raw: str) -> str:
-    """Strip surrounding quotes and resolve standard escape sequences."""
+    """Strip surrounding quotes and resolve escape sequences.
+
+    Handles:
+      * single-char escapes  ``\\n``  ``\\t``  ``\\r``  ``\\\\``  ``\\"``
+      * octal escapes ``\\NNN`` (1-3 octal digits) — required for Hive's
+        ``\\001`` SOH delimiter, which is a common field-terminator.
+        Plain ``\\0`` still resolves to NUL when no octal digits follow.
+    """
     inner = raw[1:-1]
     out: list[str] = []
     i = 0
@@ -72,9 +81,17 @@ def _unescape_dqstring(raw: str) -> str:
         ch = inner[i]
         if ch == "\\" and i + 1 < len(inner):
             nxt = inner[i + 1]
+            # Octal escape: consume up to 3 octal digits.
+            if nxt in "01234567":
+                end = i + 2
+                while end < len(inner) and end - (i + 1) < 3 and inner[end] in "01234567":
+                    end += 1
+                out.append(chr(int(inner[i + 1:end], 8)))
+                i = end
+                continue
             out.append({
                 "n": "\n", "t": "\t", "r": "\r",
-                "\\": "\\", '"': '"', "0": "\0",
+                "\\": "\\", '"': '"',
             }.get(nxt, nxt))
             i += 2
         else:
@@ -90,7 +107,9 @@ _PRIMITIVES = {
     # reader (cobrix etc.) is not in scope here; we map them to the
     # closest Spark type and tag the field as ``encoding=<original>`` so
     # downstream tools can pick the right reader.
-    "packed_decimal", "binary", "ebcdic_string", "ebcdic", "bcd",
+    "packed_decimal", "binary", "bytes", "ebcdic_string", "ebcdic", "bcd",
+    # Hive-DML idiom: ``integer(N)`` where N is a byte width (1, 2, 4, 8).
+    # Already covered by ``integer`` above; listed for clarity.
 }
 
 # Types that carry a non-default encoding flag for downstream readers.
@@ -106,6 +125,12 @@ _KW_DEFINE = {"define"}
 _KW_BEGIN = {"begin"}
 _KW_END = {"end"}
 _KW_RECORD = {"record", "group"}  # `group` is an Ab Initio alias for `record`
+
+# Storage-encoding prefixes that may appear before a primitive type
+# (e.g. ``utf8 string``, ``ascii decimal(5)``, ``packed decimal(9,2)``).
+# These don't change the Spark type mapping; they're recorded on the
+# field's ``encoding`` attribute for downstream readers (cobrix, EBCDIC).
+_ENCODING_PREFIXES = {"utf8", "ascii", "ebcdic", "packed"}
 
 # Constructs we explicitly reject when they appear as a field starter. The
 # parser's job is to surface them as an error rather than silently treat
@@ -146,6 +171,14 @@ class _Parser:
     def __init__(self, tokens: list[tuple[str, str]]):
         self.toks = tokens
         self.i = 0
+        # Set by ``_consume_array_brackets`` when it encounters
+        # ``[<fieldname>]``. The current field-building call site reads and
+        # clears it so the depending-on reference lands on the right field.
+        self._pending_depends_on: str | None = None
+        # User-defined type registry — populated by Phase 2 ``type X = record …``
+        # declarations and consulted when ``_parse_field`` sees an unknown
+        # identifier as a type.
+        self.types_by_name: dict[str, dict[str, Any]] = {}
 
     def peek(self, off: int = 0):
         idx = self.i + off
@@ -166,15 +199,41 @@ class _Parser:
         return self.i >= len(self.toks)
 
     def parse_file(self) -> dict[str, dict[str, Any]]:
-        """Parse all DEFINE blocks in the file. Returns ``{name: schema_dict}``."""
+        """Parse all top-level definitions in the file.
+
+        Recognised top-level forms:
+          ``DEFINE name BEGIN … END``         — modern named schema
+          ``record … end[;]``                 — legacy unnamed/named schema
+          ``utf8|ascii|ebcdic|packed record …`` — same with encoding prefix
+          ``type NAME = record … end;``       — type alias (stored in registry,
+                                                NOT returned as a schema)
+          ``metadata type = record … end;``   — root schema using the
+                                                ``metadata`` keyword variant
+
+        Returns ``{schema_name: schema_dict}``.
+        """
         defs: dict[str, dict[str, Any]] = {}
         while not self.at_end():
             tok = self.peek()
             if tok is None:
                 break
             if tok[0] != "ident":
-                raise ValueError(f"Expected DEFINE/record, got {tok}")
+                raise ValueError(f"Expected DEFINE/record/type, got {tok}")
+
             kw = tok[1].lower()
+
+            # Optional storage-encoding prefix on the top-level record.
+            # E.g. ``utf8 record …`` — strip and continue dispatching.
+            if kw in _ENCODING_PREFIXES:
+                # Only treat as a prefix if it's followed by `record` /
+                # `group`. Otherwise leave it alone (could be a stray ident
+                # we want to surface as an error).
+                lookahead = self.toks[self.i + 1] if self.i + 1 < len(self.toks) else None
+                if lookahead and lookahead[0] == "ident" and lookahead[1].lower() in _KW_RECORD:
+                    self.eat("ident")  # consume the encoding word
+                    tok = self.peek()
+                    kw = tok[1].lower() if tok else ""
+
             if kw in _KW_DEFINE:
                 name, schema = self._parse_define()
                 defs[name] = schema
@@ -182,9 +241,62 @@ class _Parser:
                 # legacy `record ... end;` form — name comes from `end <name>;`
                 name, schema = self._parse_record_legacy()
                 defs[name or f"record_{len(defs)}"] = schema
+            elif kw == "type":
+                # `type NAME = record … end;` — alias declaration.
+                name, schema = self._parse_type_alias()
+                # Store under both original and lowercased keys so case-
+                # insensitive lookups from `_parse_field` succeed regardless
+                # of how the field references the type.
+                self.types_by_name[name] = schema
+                self.types_by_name[name.lower()] = schema
+                # Aliases are NOT returned as top-level schemas; they're
+                # only inlined when referenced from a field.
+            elif kw == "metadata":
+                # `metadata type = record … end;` — root schema variant
+                # used by Ab Initio's xml-to-dml output.
+                name, schema = self._parse_metadata_root()
+                defs[name] = schema
             else:
                 raise ValueError(f"Unexpected top-level token {tok}")
         return defs
+
+    def _parse_type_alias(self) -> tuple[str, dict[str, Any]]:
+        """``type NAME = record … end;`` — register a reusable type."""
+        self.eat("ident", "type")
+        name_tok = self.eat("ident")
+        self.eat("eq")
+        # Allow encoding prefix on the inner record too: `type X = utf8 record …`.
+        peek = self.peek()
+        if peek and peek[0] == "ident" and peek[1].lower() in _ENCODING_PREFIXES:
+            lookahead = self.toks[self.i + 1] if self.i + 1 < len(self.toks) else None
+            if lookahead and lookahead[0] == "ident" and lookahead[1].lower() in _KW_RECORD:
+                self.eat("ident")
+        self.eat("ident", "record")
+        fields = self._parse_field_list(end_keyword="end")
+        self._close_record_body()
+        if self.peek() and self.peek()[0] == "semi":
+            self.eat("semi")
+        return name_tok[1], {"type": "record", "fields": fields}
+
+    def _parse_metadata_root(self) -> tuple[str, dict[str, Any]]:
+        """``metadata type = record … end;`` — root schema with the
+        ``metadata`` keyword variant. Returns (``"metadata"``, schema)."""
+        self.eat("ident", "metadata")
+        # Optional `type` literal between `metadata` and `=`.
+        if self.peek() and self.peek()[0] == "ident" and self.peek()[1].lower() == "type":
+            self.eat("ident", "type")
+        self.eat("eq")
+        peek = self.peek()
+        if peek and peek[0] == "ident" and peek[1].lower() in _ENCODING_PREFIXES:
+            lookahead = self.toks[self.i + 1] if self.i + 1 < len(self.toks) else None
+            if lookahead and lookahead[0] == "ident" and lookahead[1].lower() in _KW_RECORD:
+                self.eat("ident")
+        self.eat("ident", "record")
+        fields = self._parse_field_list(end_keyword="end")
+        self._close_record_body()
+        if self.peek() and self.peek()[0] == "semi":
+            self.eat("semi")
+        return "metadata", {"type": "record", "fields": fields}
 
     # DEFINE name BEGIN ... END
     def _parse_define(self) -> tuple[str, dict[str, Any]]:
@@ -273,9 +385,18 @@ class _Parser:
         return nums, delim, null_indicator
 
     def _consume_array_brackets(self) -> list[int | None]:
-        """Consume any sequence of ``[]`` / ``[N]`` and return a list of
-        dimension lengths (``None`` for unbounded). Multiple bracket pairs
-        produce a multi-dimensional array — e.g. ``[][]`` → two-dim.
+        """Consume any sequence of bracket pairs. Returns a list of dimension
+        lengths — ``None`` for any unbounded / variable-length dimension.
+
+        Three accepted forms per pair:
+          - ``[]``           → unbounded                         (length = None)
+          - ``[N]``           → fixed-length                      (length = N)
+          - ``[int]``         → unbounded vector marker           (length = None)
+          - ``[<fieldname>]`` → variable-length, depending-on     (length = None)
+
+        For depending-on references, the referenced field name is recorded
+        on ``self._pending_depends_on`` so callers can attach it to the field
+        AST. Multiple bracket pairs produce a multi-dimensional array.
         """
         dims: list[int | None] = []
         while self.peek() and self.peek()[0] == "lbracket":
@@ -285,6 +406,13 @@ class _Parser:
             if nxt and nxt[0] == "num":
                 self.eat("num")
                 length = int(nxt[1])
+            elif nxt and nxt[0] == "ident":
+                ident_name = self.eat("ident")[1]
+                if ident_name.lower() == "int":
+                    length = None  # unbounded marker
+                else:
+                    length = None
+                    self._pending_depends_on = ident_name
             self.eat("rbracket")
             dims.append(length)
         return dims
@@ -295,7 +423,12 @@ class _Parser:
             tok = self.peek()
             if tok is None:
                 raise ValueError("Unexpected EOF in field list")
+            # Accept either the `end` keyword or `}` (brace-close form). The
+            # caller decides which closer was used by peeking at the next
+            # token after this returns.
             if tok[0] == "ident" and tok[1].lower() == end_keyword:
+                return fields
+            if tok[0] == "rbrace":
                 return fields
             # Conditional block: `if (cond) [then] <fields...> [else <fields...>] end;`
             # Each branch's fields get flattened into the parent's list with
@@ -304,6 +437,23 @@ class _Parser:
                 fields.extend(self._parse_conditional())
                 continue
             fields.append(self._parse_field())
+
+    def _close_record_body(self) -> str:
+        """Consume the closer of a record body. Returns ``"end"`` or ``"}"``.
+
+        Caller is responsible for any post-close processing (name, array
+        brackets, modifiers, semicolon).
+        """
+        tok = self.peek()
+        if tok is None:
+            raise ValueError("Unexpected EOF — expected `end` or `}` closer")
+        if tok[0] == "rbrace":
+            self.eat("rbrace")
+            return "}"
+        if tok[0] == "ident" and tok[1].lower() == "end":
+            self.eat("ident", "end")
+            return "end"
+        raise ValueError(f"Expected `end` or `}}` closer, got {tok}")
 
     def _parse_conditional(self) -> list[dict[str, Any]]:
         """Parse an ``if (cond) [then] <fields> [else <fields>] end[;]`` block.
@@ -388,13 +538,31 @@ class _Parser:
     def _parse_field(self) -> dict[str, Any]:
         """Field syntax (realistic Ab Initio dialect).
 
-        Four accepted forms:
+        Accepted forms (all combinable with optional modifiers + annotations):
 
           <name> <type>[(args)] [modifiers];                 (modern)
           <type>[(args)] <name> [modifiers];                 (legacy primitive)
-          <name> record <fields> end[ <ignored>][[]] [mods]; (modern nested)
-          record <fields> end <name> [[]] [mods];            (legacy nested)
+          <name> record <fields> end [<ignored>][[]] [mods]; (modern nested)
+          record <fields> end [<name>] [[]] [mods];          (legacy nested)
+          record <fields> } [[N]] <name>;                    (brace-close)
+          [utf8|ascii|ebcdic|packed] <type>(args) <name>;    (encoding prefix)
         """
+        # Clear any depending-on state from a previous field's brackets.
+        self._pending_depends_on = None
+
+        # Optional storage-encoding prefix: utf8 | ascii | ebcdic | packed
+        # before a primitive type. Doesn't affect Spark mapping, but the
+        # prefix is stored on the AST for downstream readers (cobrix etc).
+        encoding_prefix: str | None = None
+        peek = self.peek()
+        if peek and peek[0] == "ident" and peek[1].lower() in _ENCODING_PREFIXES:
+            # Only treat as a prefix if the *next* token is an ident (the type).
+            # That avoids consuming a field literally named `ascii` etc.
+            after = self.toks[self.i + 1] if self.i + 1 < len(self.toks) else None
+            if after and after[0] == "ident":
+                encoding_prefix = peek[1].lower()
+                self.eat("ident")
+
         first = self.eat("ident")
         first_word = first[1].lower()
 
@@ -412,6 +580,9 @@ class _Parser:
         is_array = False
         array_length: int | None = None
         array_dims: list[int | None] = []
+        udt_name: str | None = None
+        # ``decimal_format`` captures the string form ``decimal(".2")``.
+        decimal_format: str | None = None
 
         if first_word in _KW_RECORD:
             # Legacy nested record (or `group` alias). Accept all of:
@@ -419,10 +590,13 @@ class _Parser:
             #   record … end[N] <name>;      (brackets first)
             #   record … end[N];             (anonymous, just brackets)
             #   record … end;                (anonymous, no array)
+            #   record … } <name>;           (brace-close form)
+            #   record … } [int] <name>;     (brace-close + brackets-before-name)
             struct_fields = self._parse_field_list(end_keyword="end")
-            self.eat("ident", "end")
+            self._close_record_body()  # consumes either "end" or "}"
 
-            # Optional brackets BEFORE the name (legacy variant). May be multi-dim.
+            # Optional brackets BEFORE the name. Both `end[N] name` and
+            # `} [int] name` orderings put dimensions ahead of the field name.
             array_dims.extend(self._consume_array_brackets())
 
             # Optional name. Skip nullability keywords and `end` (outer terminator).
@@ -444,6 +618,22 @@ class _Parser:
         elif first_word in _PRIMITIVES:
             type_name = first_word
             type_args, delimiter, null_indicator = self._maybe_type_args()
+            # Brackets MAY come between the args and the name (generator
+            # idiom: ``string(",")[int] tags;``). Consume them here; the
+            # post-name pass below will pick up any additional brackets.
+            array_dims.extend(self._consume_array_brackets())
+            field_name = self.eat("ident")[1]
+        elif first_word in self.types_by_name:
+            # Legacy form with a user-defined type: ``policy_address_t Address;``
+            # First token is the UDT name, second is the field name.
+            udt = self.types_by_name[first_word] or self.types_by_name.get(first[1])
+            struct_fields = [dict(f) for f in udt.get("fields", [])]
+            type_name = "struct"
+            is_struct = True
+            udt_name = first[1]
+            # Optional brackets between the UDT name and the field name —
+            # ``vehicle_info_t[int] Vehicle;``.
+            array_dims.extend(self._consume_array_brackets())
             field_name = self.eat("ident")[1]
         else:
             field_name = first[1]
@@ -451,22 +641,36 @@ class _Parser:
             type_name = type_tok[1].lower()
             if type_name in _KW_RECORD:
                 struct_fields = self._parse_field_list(end_keyword="end")
-                self.eat("ident", "end")
-                # Optional trailing identifier (e.g. `end addr`) before
-                # array brackets / modifiers / semicolon. Only consume it
-                # if it isn't actually a nullability keyword.
-                nxt = self.peek()
-                if nxt and nxt[0] == "ident":
-                    kw = nxt[1].lower()
-                    if (kw not in _KW_NULL and kw not in _KW_NOT
-                            and kw not in _KW_NOT_NULL and kw not in _KW_NULLABLE):
-                        self.eat("ident")
+                closer = self._close_record_body()  # "end" or "}"
+                if closer == "end":
+                    # Optional trailing identifier (e.g. `end addr`) before
+                    # array brackets / modifiers / semicolon. Only consume it
+                    # if it isn't actually a nullability keyword.
+                    nxt = self.peek()
+                    if nxt and nxt[0] == "ident":
+                        kw = nxt[1].lower()
+                        if (kw not in _KW_NULL and kw not in _KW_NOT
+                                and kw not in _KW_NOT_NULL and kw not in _KW_NULLABLE):
+                            self.eat("ident")
+                # If closer == "}", the name was already consumed before
+                # `record` (modern form), so no trailing-identifier rule.
                 type_name = "struct"
                 is_struct = True
             else:
                 if type_name not in _PRIMITIVES:
-                    raise ValueError(f"Unknown DML type: {type_name}")
-                type_args, delimiter, null_indicator = self._maybe_type_args()
+                    # Could be a user-defined type from `type X = record …`
+                    # declarations (Phase 2). Look it up in the registry.
+                    udt = self.types_by_name.get(type_name) or self.types_by_name.get(type_tok[1])
+                    if udt is None:
+                        raise ValueError(f"Unknown DML type: {type_name}")
+                    # Inline the UDT's body. Keep the original name on the
+                    # field so downstream codegen can preserve identity.
+                    struct_fields = [dict(f) for f in udt.get("fields", [])]
+                    type_name = "struct"
+                    is_struct = True
+                    udt_name = type_tok[1]
+                else:
+                    type_args, delimiter, null_indicator = self._maybe_type_args()
 
         # Array / vector brackets after the name. May be multi-dim (`[][]`).
         # Combine with any pre-name brackets the legacy form might have set.
@@ -517,7 +721,26 @@ class _Parser:
                 raise ValueError(f"Unexpected default-value token: {val_tok}")
             has_default = True
 
+        # Annotations: ``@key="value"`` (multi: ``@key="v", name="other"``).
+        annotations = self._consume_annotations()
+
         self.eat("semi")
+
+        # Snapshot any depending-on reference picked up by the most recent
+        # ``_consume_array_brackets`` call before the next field clobbers it.
+        depends_on = self._pending_depends_on
+        self._pending_depends_on = None
+
+        # ``decimal("format")`` form: a string arg on a decimal type CAN be
+        # a format like ``".2"`` (scale 2) or ``"9999.99"`` (precision 6,
+        # scale 2). It can ALSO be a real delimiter like ``"¨"`` or ``","``.
+        # Treat as a format only when the string actually looks like a
+        # numeric format — otherwise leave it as a delimiter.
+        if type_name == "decimal" and not type_args and delimiter is not None:
+            if _looks_like_decimal_format(delimiter):
+                decimal_format = delimiter
+                type_args = _decimal_format_to_args(delimiter)
+                delimiter = None
 
         if is_struct:
             out: dict[str, Any] = {
@@ -533,6 +756,14 @@ class _Parser:
                 out["array_dims"] = array_dims
             if has_default:
                 out["default"] = default
+            if udt_name is not None:
+                out["udt_name"] = udt_name
+            if encoding_prefix is not None:
+                out["encoding"] = encoding_prefix
+            if annotations:
+                out["annotations"] = annotations
+            if depends_on:
+                out["depends_on"] = depends_on
             return out
         out = {
             "name": field_name,
@@ -562,7 +793,102 @@ class _Parser:
             out["default"] = default
         if type_name in _ENCODED_TYPES:
             out["encoding"] = _ENCODED_TYPES[type_name]
+        elif encoding_prefix is not None:
+            # Encoding prefix wins over no-prefix; preserves whichever was
+            # specified (utf8 / ascii / ebcdic / packed).
+            out["encoding"] = encoding_prefix
+        if decimal_format is not None:
+            out["decimal_format"] = decimal_format
+        if annotations:
+            out["annotations"] = annotations
+        if depends_on:
+            out["depends_on"] = depends_on
         return out
+
+    def _consume_annotations(self) -> dict[str, str]:
+        """Consume zero or more ``@key="value"`` annotations.
+
+        Forms recognised:
+          ``@style="element"``                        — single
+          ``@style="attribute", name="type"``         — multi-annotation
+                                                        (additional pairs share
+                                                         the leading ``@``)
+
+        Annotations are skipped semantically — they don't affect the Spark
+        type — but the parsed ``{key: value}`` dict is returned so callers
+        can attach it to the AST for later XML/Cobrix-aware codegen.
+        """
+        if not (self.peek() and self.peek()[0] == "at"):
+            return {}
+        out: dict[str, str] = {}
+        # Consume the leading @ once.
+        self.eat("at")
+        while True:
+            key_tok = self.eat("ident")
+            self.eat("eq")
+            val_tok = self.peek()
+            if val_tok is None or val_tok[0] != "dqstring":
+                raise ValueError(f"Expected string value after @{key_tok[1]}=")
+            self.eat("dqstring")
+            out[key_tok[1]] = _unescape_dqstring(val_tok[1])
+            # Multi-annotation: a comma followed by another `key="value"`
+            # pair (with or without a fresh leading `@`).
+            if self.peek() and self.peek()[0] == "comma":
+                self.eat("comma")
+                if self.peek() and self.peek()[0] == "at":
+                    self.eat("at")
+                continue
+            break
+        return out
+
+
+def _looks_like_decimal_format(s: str) -> bool:
+    """True if the string is plausibly a decimal *format* (e.g. ``".2"``,
+    ``"9999.99"``) rather than a *delimiter* (e.g. ``","``, ``"¨"``,
+    ``"\\0"``).
+
+    Rule: must contain at least one digit or `9` (Ab Initio's mask char),
+    and consist only of digits, `9`s, dots, signs, and whitespace.
+    """
+    if not s:
+        return False
+    has_digit = any(c.isdigit() or c == "9" for c in s)
+    if not has_digit:
+        return False
+    return all(c.isdigit() or c in ".+-9 \t" for c in s)
+
+
+def _decimal_format_to_args(fmt: str) -> list[int]:
+    """Translate an Ab Initio decimal format string to ``[precision, scale]``.
+
+    Ab Initio writes ``decimal(".2")`` (scale 2, default precision) or
+    ``decimal("9999.99")`` (precision 6, scale 2). Spark needs explicit
+    precision + scale. Defaults: when precision can't be inferred, use
+    Spark's max precision of 38.
+    """
+    fmt = fmt.strip()
+    # Plain `.N` → scale N, default precision 38
+    m = re.match(r"^\.(\d+)$", fmt)
+    if m:
+        return [38, int(m.group(1))]
+    # Plain `N` → precision N, scale 0
+    m = re.match(r"^(\d+)$", fmt)
+    if m:
+        return [int(m.group(1)), 0]
+    # ``9999.99`` style — count digits before/after the dot
+    m = re.match(r"^(9*)\.(9*)$", fmt)
+    if m:
+        before = len(m.group(1))
+        after = len(m.group(2))
+        return [max(before + after, 1), after]
+    # Last-ditch: count any digits + decimal point. Default to 38, 0.
+    if "." in fmt:
+        before, after = fmt.split(".", 1)
+        before_d = sum(c.isdigit() for c in before)
+        after_d = sum(c.isdigit() for c in after)
+        if after_d:
+            return [max(before_d + after_d, after_d, 1), after_d]
+    return [38, 0]
 
 
 def _normalize_type(name: str) -> str:
@@ -582,6 +908,7 @@ def _normalize_type(name: str) -> str:
         "packed_decimal": "decimal",
         "bcd": "decimal",
         "binary": "binary",
+        "bytes": "binary",
         "ebcdic_string": "string",
         "ebcdic": "string",
     }
@@ -622,6 +949,9 @@ def _field_byte_length(f: dict[str, Any]) -> int | None:
             precision = args[0] if args else 18
             return (precision // 2) + 1
         return args[0] if args else None
+    if t == "integer" and args:
+        # ``integer(N)`` — N is byte width.
+        return args[0]
     if t in _DEFAULT_BYTE_LENGTHS:
         return _DEFAULT_BYTE_LENGTHS[t]
     return None
@@ -783,7 +1113,16 @@ def _primitive_to_spark(name: str, args: list[int], lossy: bool = False):
     if name == "string":
         return T.StringType()
     if name == "integer":
-        return T.IntegerType()
+        # ``integer(N)`` — N is byte width (Hive/Ab Initio convention):
+        #   1 → ByteType, 2 → ShortType, 4 → IntegerType, 8 → LongType.
+        width = args[0] if args else 4
+        if width <= 1:
+            return T.ByteType()
+        if width <= 2:
+            return T.ShortType()
+        if width <= 4:
+            return T.IntegerType()
+        return T.LongType()
     if name == "long":
         return T.LongType()
     if name == "double":
