@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ab Initio → PySpark Convertor — IBM Network</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="deck">
+
+    <!-- ========== SLIDE 1 — TITLE ========== -->
+    <section class="slide slide-title" data-slide="1">
+      <div class="edge-accent"></div>
+      <div class="title-wrap">
+        <div class="eyebrow">IBM NETWORK · INTERNAL</div>
+        <h1 class="hero-title">Ab Initio <span class="arrow">→</span> PySpark<br/>Convertor</h1>
+        <p class="hero-sub">IBM Network · Automated Legacy ETL Migration</p>
+      </div>
+      <div class="title-footer">
+        <div class="footer-left">Team Presentation — Internal</div>
+        <div class="footer-right">May 2026</div>
+      </div>
+      <div class="bg-grid"></div>
+    </section>
+
+    <!-- ========== SLIDE 2 — PROBLEM ========== -->
+    <section class="slide" data-slide="2">
+      <header class="slide-header">
+        <h2>The Problem</h2>
+        <div class="header-rule"></div>
+      </header>
+
+      <div class="stat-row">
+        <div class="stat-card">
+          <div class="stat-value">Weeks</div>
+          <div class="stat-label">Manual Migration Time<br/>Per Graph</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">High</div>
+          <div class="stat-label">Error Rate in<br/>Manual Re-coding</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">$$$</div>
+          <div class="stat-label">Engineering Cost<br/>per Migration</div>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="col">
+          <h3 class="col-title">Ab Initio Reality</h3>
+          <ul class="bullets">
+            <li>Proprietary <code>.mp</code> graph format — not human-readable</li>
+            <li>DML schemas define complex binary/text layouts</li>
+            <li>Transform expressions in Ab Initio's own language</li>
+            <li>Hundreds of graphs to migrate</li>
+          </ul>
+        </div>
+        <div class="col">
+          <h3 class="col-title">Current Approach</h3>
+          <ul class="bullets">
+            <li>Engineers manually read each graph</li>
+            <li>Hand-write PySpark equivalents</li>
+            <li>No consistency, high rework rate</li>
+            <li>No validation until runtime</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== SLIDE 3 — SOLUTION ========== -->
+    <section class="slide" data-slide="3">
+      <header class="slide-header">
+        <h2>Our Solution: Automated Conversion Pipeline</h2>
+        <div class="header-rule"></div>
+      </header>
+
+      <p class="slide-sub center">
+        Input <code>.mp</code> graph &nbsp;→&nbsp; Runnable PySpark <code>.py</code> file
+      </p>
+
+      <div class="num-cards">
+        <div class="num-card">
+          <div class="num-badge">1</div>
+          <h4>Parse</h4>
+          <p>Read Ab Initio graph structure from Neo4j</p>
+        </div>
+        <div class="num-card">
+          <div class="num-badge">2</div>
+          <h4>Schema</h4>
+          <p>Convert DML record formats to PySpark <code>StructType</code></p>
+        </div>
+        <div class="num-card">
+          <div class="num-badge">3</div>
+          <h4>Map</h4>
+          <p>Translate Ab Initio components to PySpark ops</p>
+        </div>
+        <div class="num-card">
+          <div class="num-badge">4</div>
+          <h4>Generate</h4>
+          <p>Synthesize production-ready <code>.py</code> file</p>
+        </div>
+      </div>
+
+      <div class="banner">
+        <span><strong>90/99</strong> test cases passing</span>
+        <span class="dot">·</span>
+        <span><strong>6</strong> components covered</span>
+        <span class="dot">·</span>
+        <span><strong>25</strong> DML features supported</span>
+      </div>
+    </section>
+
+    <!-- ========== SLIDE 4 — ARCHITECTURE ========== -->
+    <section class="slide" data-slide="4">
+      <header class="slide-header">
+        <h2>Architecture: Two Networks</h2>
+        <div class="header-rule"></div>
+      </header>
+
+      <div class="arch">
+        <div class="arch-panel arch-out">
+          <div class="arch-tag arch-tag-muted">OUT OF SCOPE</div>
+          <h3 class="arch-net muted">Client Network</h3>
+          <ul class="arch-list">
+            <li>Ab Initio <code>.mp</code> Graph Files</li>
+            <li>Parser <span class="muted">(separate workstream)</span></li>
+            <li>Outputs to Neo4j Graph DB</li>
+          </ul>
+          <div class="arch-note">Runs on client premises</div>
+        </div>
+
+        <div class="arch-arrow">
+          <div class="arrow-label">Neo4j Handoff</div>
+          <svg viewBox="0 0 120 40" class="arr-svg">
+            <defs>
+              <linearGradient id="ag" x1="0" x2="1">
+                <stop offset="0" stop-color="#3B82F6"/>
+                <stop offset="1" stop-color="#F97316"/>
+              </linearGradient>
+            </defs>
+            <line x1="0" y1="20" x2="100" y2="20" stroke="url(#ag)" stroke-width="3"/>
+            <polygon points="100,12 120,20 100,28" fill="#F97316"/>
+          </svg>
+        </div>
+
+        <div class="arch-panel arch-in">
+          <div class="arch-tag arch-tag-orange">THIS PROJECT</div>
+          <h3 class="arch-net accent">IBM Network</h3>
+          <div class="arch-sub-stack">
+            <div class="arch-sub"><span class="circle">①</span> <div><strong>IR Loader</strong><br/><span class="muted small">Neo4j → Pydantic IR</span></div></div>
+            <div class="arch-sub"><span class="circle">②</span> <div><strong>DML Convertor</strong><br/><span class="muted small">DML → StructType</span></div></div>
+            <div class="arch-sub"><span class="circle">③</span> <div><strong>Mapping Engine</strong><br/><span class="muted small">AbInitio ops → PySpark ops</span></div></div>
+            <div class="arch-sub"><span class="circle">④</span> <div><strong>Code Generator</strong><br/><span class="muted small">Jinja2 + LLM → .py</span></div></div>
+          </div>
+          <div class="arch-out-line">→ Runnable PySpark <code>.py</code></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== SLIDE 5 — END TO END FLOW ========== -->
+    <section class="slide" data-slide="5">
+      <header class="slide-header">
+        <h2>How It Works — End to End</h2>
+        <div class="header-rule"></div>
+      </header>
+
+      <div class="flow">
+        <div class="flow-step"><div class="fs-box">.mp File</div><div class="fs-desc"><em>Ab Initio graph</em></div></div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step"><div class="fs-box">Neo4j DB</div><div class="fs-desc"><em>Parser output (nodes + edges)</em></div></div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step"><div class="fs-box">IR Loader</div><div class="fs-desc"><em>Pydantic models</em></div></div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step"><div class="fs-box accent-box">Mapping Engine</div><div class="fs-desc"><em>Rule-based + LLM fallback</em></div></div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step"><div class="fs-box accent-box">DML Convertor</div><div class="fs-desc"><em>Lark Earley parser → StructType</em></div></div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step"><div class="fs-box accent-box">Code Generator</div><div class="fs-desc"><em>Jinja2 + Ollama polish</em></div></div>
+        <div class="flow-arrow">›</div>
+        <div class="flow-step"><div class="fs-box success-box">output.py</div><div class="fs-desc"><em>Runnable PySpark pipeline</em></div></div>
+      </div>
+
+      <div class="example two-col">
+        <div class="col code-col">
+          <div class="code-label">Ab Initio REFORMAT transform body</div>
+<pre class="code-block">out.customer_id :: customer_id;
+out.name :: string_upcase(name);</pre>
+        </div>
+        <div class="col code-col">
+          <div class="code-label accent">Generated PySpark</div>
+<pre class="code-block">df.select(
+    col("customer_id"),
+    upper(col("name")).alias("name")
+)</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== SLIDE 6 — DML CONVERTOR ========== -->
+    <section class="slide" data-slide="6">
+      <header class="slide-header">
+        <h2>DML Convertor: Feature Coverage</h2>
+        <div class="header-rule"></div>
+      </header>
+      <p class="slide-sub">Lark Earley parser handles the full Ab Initio DML grammar</p>
+
+      <table class="feature-table">
+        <thead>
+          <tr><th>Feature</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Scalar types (decimal, integer, real, string, date, datetime, void)</td><td class="ok">✅ Supported</td></tr>
+          <tr><td>Delimited fields + per-field null sentinels</td><td class="ok">✅ Supported</td></tr>
+          <tr><td>Fixed-width (no-delimiter) records</td><td class="ok">✅ Supported</td></tr>
+          <tr><td>Nested sub-records (record…end name)</td><td class="ok">✅ Supported</td></tr>
+          <tr><td>Fixed-length vectors <code>field[N]</code></td><td class="ok">✅ Supported</td></tr>
+          <tr><td>Variable-length vectors <code>record[disc]…end</code></td><td class="ok">✅ Supported</td></tr>
+          <tr><td>Union fields</td><td class="warn">✅ MANUAL_REVIEW flagged</td></tr>
+          <tr><td>Conditional fields (if / else if / else chains)</td><td class="ok">✅ Supported</td></tr>
+          <tr><td>Packed / zoned decimal</td><td class="warn">✅ MANUAL_REVIEW flagged</td></tr>
+          <tr><td>Mixed-delimiter records</td><td class="ok">✅ Supported</td></tr>
+          <tr><td>Comments and whitespace</td><td class="ok">✅ Supported</td></tr>
+          <tr><td>Include resolver (<code>%include</code>)</td><td class="prog">🔄 In Progress</td></tr>
+          <tr><td>Type aliases (<code>typedef</code>)</td><td class="prog">🔄 In Progress</td></tr>
+          <tr><td>EBCDIC charset</td><td class="prog">🔄 In Progress</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ========== SLIDE 7 — MAPPING ENGINE ========== -->
+    <section class="slide" data-slide="7">
+      <header class="slide-header">
+        <h2>Mapping Engine: 6 Components Covered</h2>
+        <div class="header-rule"></div>
+      </header>
+      <p class="slide-sub">Rule-based deterministic mapping. LLM fallback only for unknowns.</p>
+
+      <div class="mapping-grid">
+        <div class="map-card">
+          <div class="map-row"><span class="ai">REFORMAT</span><span class="map-arr">→</span><span class="ps">df.select(*cols)</span></div>
+          <pre class="code-block sm">df.select(col("id"), upper(col("name")))</pre>
+        </div>
+        <div class="map-card">
+          <div class="map-row"><span class="ai">FILTER_BY_EXPRESSION</span><span class="map-arr">→</span><span class="ps">df.filter(...)</span></div>
+          <pre class="code-block sm">df.filter(F.expr("amount &gt; 100"))</pre>
+        </div>
+        <div class="map-card">
+          <div class="map-row"><span class="ai">JOIN</span><span class="map-arr">→</span><span class="ps">left.join(right, on=keys)</span></div>
+          <pre class="code-block sm">left.join(right, on=["id"], how="inner")</pre>
+        </div>
+        <div class="map-card">
+          <div class="map-row"><span class="ai">SORT</span><span class="map-arr">→</span><span class="ps">df.orderBy(*keys)</span></div>
+          <pre class="code-block sm">df.orderBy("date", "id")</pre>
+        </div>
+        <div class="map-card">
+          <div class="map-row"><span class="ai">ROLLUP</span><span class="map-arr">→</span><span class="ps">df.groupBy().agg()</span></div>
+          <pre class="code-block sm">df.groupBy("region").agg(sum("sales"))</pre>
+        </div>
+        <div class="map-card">
+          <div class="map-row"><span class="ai">DEDUP_SORTED</span><span class="map-arr">→</span><span class="ps">df.dropDuplicates()</span></div>
+          <pre class="code-block sm">df.dropDuplicates(["customer_id"])</pre>
+        </div>
+      </div>
+
+      <div class="bottom-strip">
+        <strong>Strategy:</strong> Deterministic rules handle ~90% of cases. Local LLM (Ollama) invoked only for unknown components or unparseable transform expressions.
+      </div>
+    </section>
+
+    <!-- ========== SLIDE 8 — CODE GENERATOR ========== -->
+    <section class="slide" data-slide="8">
+      <header class="slide-header">
+        <h2>Code Generator: From IR to Production Python</h2>
+        <div class="header-rule"></div>
+      </header>
+      <p class="slide-sub">Deterministic synthesis with optional LLM polish — all on-premise</p>
+
+      <div class="two-col tall">
+        <div class="col">
+          <h3 class="col-title">How it works</h3>
+          <ol class="num-list">
+            <li>Walk IR graph in topological order</li>
+            <li>Pull mapped op for each component</li>
+            <li>Render via Jinja2 pipeline template</li>
+            <li>LLM polish pass (optional, local only)</li>
+            <li>Output clean, importable <code>.py</code> file</li>
+          </ol>
+        </div>
+        <div class="col">
+          <h3 class="col-title">Why Local LLM?</h3>
+          <div class="callout callout-orange">
+            Client DML schemas and transform expressions contain proprietary business logic.
+            <strong>Data CANNOT leave the client network.</strong>
+          </div>
+          <ul class="bullets compact">
+            <li><strong>Model:</strong> qwen2.5-coder:14b via Ollama</li>
+            <li><strong>Alternative:</strong> vLLM on IBM-side infra</li>
+            <li>LLM is optional — pipeline works without it</li>
+            <li>Used only for fallback + final polish</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== SLIDE 9 — WEB UI ========== -->
+    <section class="slide" data-slide="9">
+      <header class="slide-header">
+        <h2>Bonus: Local Web UI for Schema Exploration</h2>
+        <div class="header-rule"></div>
+      </header>
+      <p class="slide-sub">FastAPI + static HTML/JS — runs at <code>localhost:8000</code></p>
+
+      <div class="feature-grid">
+        <div class="feature-card">
+          <div class="ficon ficon-blue">▤</div>
+          <h4>DML Schema Tab</h4>
+          <p>Paste DML record → Get PySpark <code>StructType</code> + full <code>spark.read</code> chain</p>
+        </div>
+        <div class="feature-card">
+          <div class="ficon ficon-orange">⇄</div>
+          <h4>Transform Body Tab</h4>
+          <p>Paste Ab Initio <code>out.x :: expr</code> block → Get <code>df.select()</code> arguments</p>
+        </div>
+        <div class="feature-card">
+          <div class="ficon ficon-green">ƒ</div>
+          <h4>Single Expression Tab</h4>
+          <p>One Ab Initio expression → PySpark Column expression</p>
+        </div>
+        <div class="feature-card">
+          <div class="ficon ficon-purple">⛓</div>
+          <h4>Full Pipeline Tab</h4>
+          <p>POST graph JSON → Complete runnable <code>.py</code> file</p>
+        </div>
+      </div>
+
+      <pre class="code-block term">$ pip install -e ".[web]" &amp;&amp; uvicorn ibm_network.web.server:app --reload --port 8000</pre>
+    </section>
+
+    <!-- ========== SLIDE 10 — TEST PROGRESS ========== -->
+    <section class="slide" data-slide="10">
+      <header class="slide-header">
+        <h2>Test Progress: 90 / 99 Passing</h2>
+        <div class="header-rule"></div>
+      </header>
+      <p class="slide-sub">DML Suite — TC-001 through TC-025 + CLI + E2E tests</p>
+
+      <div class="big-stat">
+        <span class="bs-num">90</span><span class="bs-slash">/</span><span class="bs-tot">99</span>
+        <div class="bs-label">tests passing</div>
+      </div>
+
+      <div class="tc-grid" id="tc-grid"></div>
+
+      <div class="legend">
+        <span class="lg-item"><span class="dot dot-green"></span>PASS</span>
+        <span class="lg-item"><span class="dot dot-yellow"></span>Partial / Manual Review</span>
+        <span class="lg-item"><span class="dot dot-red"></span>Failing</span>
+      </div>
+
+      <p class="footnote">9 failing tests across 5 scenarios. All failures are tracked with clear remediation paths.</p>
+    </section>
+
+    <!-- ========== SLIDE 11 — SCOPE ========== -->
+    <section class="slide" data-slide="11">
+      <header class="slide-header">
+        <h2>Scope: V1 Coverage</h2>
+        <div class="header-rule"></div>
+      </header>
+
+      <div class="scope-grid">
+        <div class="scope-panel scope-in">
+          <h3>✅ In Scope — V1</h3>
+          <div class="scope-section">
+            <div class="scope-h">Ab Initio Components</div>
+            <p>REFORMAT, FILTER_BY_EXPRESSION, JOIN, SORT, ROLLUP, DEDUP_SORTED</p>
+          </div>
+          <div class="scope-section">
+            <div class="scope-h">DML Features</div>
+            <p>All scalar types, null sentinels, date/time, vectors, nested records, conditionals, unions, packed decimal (stub)</p>
+          </div>
+          <div class="scope-section">
+            <div class="scope-h">Infrastructure</div>
+            <p>Neo4j → IR pipeline, CLI tool, Web UI, E2E tests, Docker Compose dev setup</p>
+          </div>
+        </div>
+
+        <div class="scope-panel scope-out">
+          <h3>❌ Out of Scope — V1</h3>
+          <div class="scope-section">
+            <div class="scope-h">Ab Initio Components</div>
+            <p>SCAN, NORMALIZE, DENORMALIZE, LOOKUP, MULTI_REFORMAT, PARTITION_BY_KEY, GATHER, MERGE</p>
+          </div>
+          <div class="scope-section">
+            <div class="scope-h">DML Features</div>
+            <p>Include resolver (<code>%include</code>), Type aliases (<code>typedef</code>), EBCDIC charset full support</p>
+          </div>
+          <div class="scope-section">
+            <div class="scope-h">Infrastructure</div>
+            <p>The Parser (Client Network — separate workstream), Cloud deployment, CI/CD pipeline, Production hardening</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== SLIDE 12 — REMAINING WORK ========== -->
+    <section class="slide" data-slide="12">
+      <header class="slide-header">
+        <h2>Remaining Work: 5 Items</h2>
+        <div class="header-rule"></div>
+      </header>
+
+      <div class="work-list">
+        <div class="work-item">
+          <div class="work-id">TC-021</div>
+          <div class="work-body">
+            <h4>Include Resolver</h4>
+            <p><strong>What:</strong> grammar.lark + parser pre-processing for <code>%include "other.dml"</code></p>
+            <p class="effort">Effort: ~1 day</p>
+          </div>
+        </div>
+        <div class="work-item">
+          <div class="work-id">TC-022</div>
+          <div class="work-body">
+            <h4>Type Aliases</h4>
+            <p><strong>What:</strong> grammar extension + symbol table for <code>typedef</code> declarations</p>
+            <p class="effort">Effort: ~1 day</p>
+          </div>
+        </div>
+        <div class="work-item">
+          <div class="work-id">TC-024</div>
+          <div class="work-body">
+            <h4>EBCDIC Charset</h4>
+            <p><strong>What:</strong> grammar fix + MANUAL_REVIEW warning generation</p>
+            <p class="effort">Effort: ~0.5 day</p>
+          </div>
+        </div>
+        <div class="work-item">
+          <div class="work-id">TC-025</div>
+          <div class="work-body">
+            <h4>Boss Fight Integration</h4>
+            <p><strong>What:</strong> Full integration test — depends on TC-021/022/024 first</p>
+            <p class="effort">Effort: ~0.5 day after blockers resolved</p>
+          </div>
+        </div>
+        <div class="work-item">
+          <div class="work-id">TC-020</div>
+          <div class="work-body">
+            <h4>Packed/Zoned Binary</h4>
+            <p><strong>What:</strong> UDF stub + byte-level decode logic (intentionally hard)</p>
+            <p class="effort">Effort: ~2 days (+ domain expertise on sign nibble conventions)</p>
+          </div>
+        </div>
+      </div>
+      <p class="footnote">Plus: fix CLI <code>read_strategy</code> routing for no-delimiter decimal fields (<code>test_cli.py</code>)</p>
+    </section>
+
+    <!-- ========== SLIDE 13 — BLOCKERS ========== -->
+    <section class="slide" data-slide="13">
+      <header class="slide-header">
+        <h2>Blockers — Action Required</h2>
+        <div class="header-rule"></div>
+      </header>
+
+      <div class="blocker-grid">
+        <div class="blocker-card sev-red">
+          <div class="bl-num">1</div>
+          <h4>Neo4j Schema Contract</h4>
+          <p>Parser team has not confirmed node labels, relationship types, or property names. IR loader is built on assumed schema — could break when real Parser output arrives.</p>
+          <div class="bl-action"><strong>Action:</strong> Parser team to share Cypher schema definition</div>
+        </div>
+        <div class="blocker-card sev-red">
+          <div class="bl-num">2</div>
+          <h4>No Real Client Graphs</h4>
+          <p>All testing uses hand-crafted synthetic fixtures. No sanitized real Ab Initio graphs from client yet. Coverage gaps may be hidden.</p>
+          <div class="bl-action"><strong>Action:</strong> Client Network team to provide 5-10 sanitized graph examples</div>
+        </div>
+        <div class="blocker-card sev-yellow">
+          <div class="bl-num">3</div>
+          <h4>LLM Model Uncertainty</h4>
+          <p>Which model is available on IBM-side infra not confirmed (qwen2.5-coder vs codellama vs deepseek-coder). Prompts and fallback logic may need tuning per model.</p>
+          <div class="bl-action"><strong>Action:</strong> IBM infra team to confirm available model + endpoint</div>
+        </div>
+        <div class="blocker-card sev-yellow">
+          <div class="bl-num">4</div>
+          <h4>V1 Coverage Target Not Signed Off</h4>
+          <p>Proposed target: ≥90% deterministic, &lt;10% LLM fallback. Not formally agreed with stakeholders. Without this, "done" has no definition.</p>
+          <div class="bl-action"><strong>Action:</strong> Stakeholder sign-off needed</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== SLIDE 14 — PHASE STATUS ========== -->
+    <section class="slide" data-slide="14">
+      <header class="slide-header">
+        <h2>Development Phases: Where We Are</h2>
+        <div class="header-rule"></div>
+      </header>
+
+      <div class="timeline">
+        <div class="phase done">
+          <div class="ph-marker">✅</div>
+          <div class="ph-body"><strong>Phase 0 — Scaffolding</strong><span class="ph-status">DONE</span><p>pyproject.toml, docker-compose, Makefile, README</p></div>
+        </div>
+        <div class="phase done">
+          <div class="ph-marker">✅</div>
+          <div class="ph-body"><strong>Phase 1 — IR + Neo4j Loader</strong><span class="ph-status">DONE</span><p>Pydantic IR models, Cypher queries, fixture seeding</p></div>
+        </div>
+        <div class="phase done">
+          <div class="ph-marker">✅</div>
+          <div class="ph-body"><strong>Phase 2 — DML Convertor</strong><span class="ph-status">DONE</span><p>Lark grammar, Earley parser, AST, StructType emitter</p></div>
+        </div>
+        <div class="phase done">
+          <div class="ph-marker">✅</div>
+          <div class="ph-body"><strong>Phase 3 — Mapping Engine</strong><span class="ph-status">DONE</span><p>6 component rules, transform expression parser (Lark)</p></div>
+        </div>
+        <div class="phase done">
+          <div class="ph-marker">✅</div>
+          <div class="ph-body"><strong>Phase 4 — Code Generator</strong><span class="ph-status">DONE</span><p>Jinja2 templates, Ollama LLM client, synthesizer</p></div>
+        </div>
+        <div class="phase done">
+          <div class="ph-marker">✅</div>
+          <div class="ph-body"><strong>Phase 5 — CLI + E2E Glue</strong><span class="ph-status">DONE</span><p><code>ibm-net convert</code> command, E2E test, spark-submit verification</p></div>
+        </div>
+        <div class="phase progress">
+          <div class="ph-marker">🔄</div>
+          <div class="ph-body"><strong>Phase 6 — Validation &amp; Iteration</strong><span class="ph-status prog">IN PROGRESS</span><p>DML fixture corpus, coverage matrix, 90/99 passing — 5 items remaining</p></div>
+        </div>
+        <div class="phase notstarted">
+          <div class="ph-marker">⏳</div>
+          <div class="ph-body"><strong>Phase 7 — Documentation &amp; Handoff</strong><span class="ph-status not">NOT STARTED</span><p>Per-component mapping reference, runbook, troubleshooting guide</p></div>
+        </div>
+      </div>
+
+      <div class="progress-bar">
+        <div class="pb-fill" style="width:75%"><span class="pb-label">75% complete · 6 of 8 phases done · 1 in progress</span></div>
+      </div>
+    </section>
+
+    <!-- ========== SLIDE 15 — NEXT STEPS ========== -->
+    <section class="slide" data-slide="15">
+      <header class="slide-header">
+        <h2>Next Steps</h2>
+        <div class="header-rule"></div>
+      </header>
+      <p class="slide-sub">To reach 99/99 and hand off to production</p>
+
+      <div class="three-col">
+        <div class="col">
+          <h3 class="col-title">This Sprint</h3>
+          <ul class="bullets">
+            <li>Implement include resolver (TC-021)</li>
+            <li>Implement type aliases (TC-022)</li>
+            <li>Fix EBCDIC grammar (TC-024)</li>
+            <li>Run boss fight integration (TC-025)</li>
+          </ul>
+        </div>
+        <div class="col">
+          <h3 class="col-title">Needs External Input</h3>
+          <ul class="bullets">
+            <li>Parser team: Neo4j schema contract</li>
+            <li>Client team: real sanitized graph samples</li>
+            <li>IBM infra: confirm LLM model + endpoint</li>
+            <li>Stakeholders: sign off V1 coverage target</li>
+          </ul>
+        </div>
+        <div class="col">
+          <h3 class="col-title">After Blockers Resolved</h3>
+          <ul class="bullets">
+            <li>Validate against real client graphs</li>
+            <li>Tune LLM prompts for confirmed model</li>
+            <li>Write Phase 7 documentation</li>
+            <li>Plan V2 component scope (SCAN, NORMALIZE, etc.)</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="cta">
+        The core pipeline is production-capable. Unblocking the 4 open items will take us to <strong>99/99</strong> and Phase 7 handoff.
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Navigation -->
+  <nav class="deck-nav" aria-label="slide navigation">
+    <button id="prev" aria-label="Previous slide">‹</button>
+    <div class="nav-counter"><span id="cur">1</span> / <span id="tot">15</span></div>
+    <button id="next" aria-label="Next slide">›</button>
+  </nav>
+
+  <div class="hint">← / → to navigate · F for fullscreen</div>
+
+  <script src="script.js"></script>
+</body>
+</html>

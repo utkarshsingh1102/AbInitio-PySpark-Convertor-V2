@@ -1,0 +1,179 @@
+-- ==============================================================
+-- normalize_customer.xfr
+-- Component: NormalizeCustomer (node_03)
+-- Input:  customer_raw
+-- Output: customer_normalized
+-- ==============================================================
+
+TRANSFORM normalize_customer
+BEGIN
+    -- Concatenate and uppercase full name
+    out.full_name = upper(trim(in.first_name) + " " + trim(in.last_name));
+
+    -- Pass through as-is
+    out.customer_id    = in.customer_id;
+    out.email          = lower(trim(in.email));
+
+    -- Extract 2-char ISO country code from country string (first 2 chars, uppercased)
+    out.country_code   = if (is_null(in.country))
+                             null
+                         else
+                             upper(substring(trim(in.country), 1, 2));
+
+    -- Cast signup_date string "YYYY-MM-DD" to date
+    out.signup_date    = string_to_date(in.signup_date, "YYYY-MM-DD");
+
+    -- Default loyalty_points to 0 if null
+    out.loyalty_points = if (is_null(in.loyalty_points)) 0 else in.loyalty_points;
+END
+
+
+-- ==============================================================
+-- normalize_order.xfr
+-- Component: NormalizeOrder (node_04)
+-- Input:  order_raw
+-- Output: order_normalized
+-- ==============================================================
+
+TRANSFORM normalize_order
+BEGIN
+    out.order_id     = trim(in.order_id);
+    out.customer_id  = in.customer_id;
+    out.product_code = upper(trim(in.product_code));
+    out.quantity     = in.quantity;
+    out.unit_price   = in.unit_price;
+    out.status       = upper(trim(in.status));
+
+    -- Cast order_date string to datetime
+    out.order_date   = string_to_datetime(in.order_date, "YYYY-MM-DD HH:MM:SS");
+
+    -- Derive order_month as "YYYY-MM"
+    out.order_month  = substring(in.order_date, 1, 7);
+
+    -- Coalesce order_amount: use raw if present, otherwise derive from quantity * unit_price
+    out.order_amount = if (is_null(in.order_amount) or in.order_amount = 0)
+                           decimal(in.quantity * in.unit_price, 12, 2)
+                       else
+                           in.order_amount;
+
+    -- Validity flag: 1 if all key fields non-null, 0 otherwise
+    out.is_valid     = if (is_null(in.order_id) or is_null(in.customer_id) or is_null(in.order_date))
+                           0
+                       else
+                           1;
+END
+
+
+-- ==============================================================
+-- enrich_record.xfr
+-- Component: EnrichRecord (node_06)
+-- Input:  enriched_order (post-join, pre-enrichment)
+-- Output: enriched_order (fully enriched)
+-- ==============================================================
+
+TRANSFORM enrich_record
+BEGIN
+    -- Pass through all join fields unchanged
+    out.order_id     = in.order_id;
+    out.customer_id  = in.customer_id;
+    out.full_name    = in.full_name;
+    out.email        = in.email;
+    out.country_code = in.country_code;
+    out.signup_date  = in.signup_date;
+    out.order_date   = in.order_date;
+    out.order_month  = in.order_month;
+    out.product_code = in.product_code;
+    out.quantity     = in.quantity;
+    out.unit_price   = in.unit_price;
+    out.order_amount = in.order_amount;
+    out.status       = in.status;
+    out.is_valid     = in.is_valid;
+
+    -- Compute total including 18% tax
+    out.total_with_tax = decimal(in.order_amount * 1.18, 12, 2);
+
+    -- Derive loyalty tier from loyalty_points
+    out.loyalty_tier   = if (in.loyalty_points >= 5000)
+                             "GOLD"
+                         else if (in.loyalty_points >= 1000)
+                             "SILVER"
+                         else
+                             "BRONZE";
+
+    -- Days since customer signup to order date
+    out.days_since_signup = date_diff(in.order_date, in.signup_date, "days");
+
+    -- Discount and final_amount initialized null here; populated downstream
+    out.discount_pct   = null;
+    out.final_amount   = null;
+    out.loyalty_points = in.loyalty_points;
+END
+
+
+-- ==============================================================
+-- filter_high_value.xfr
+-- Component: FilterHighValue (node_07)
+-- Passes records WHERE order_amount > 1000
+-- ==============================================================
+
+FILTER filter_high_value
+BEGIN
+    CONDITION: in.order_amount > 1000.00 and in.is_valid = 1;
+END
+
+
+-- ==============================================================
+-- filter_standard.xfr
+-- Component: FilterStandard (node_08)
+-- Passes records WHERE order_amount <= 1000
+-- ==============================================================
+
+FILTER filter_standard
+BEGIN
+    CONDITION: in.order_amount <= 1000.00 and in.is_valid = 1;
+END
+
+
+-- ==============================================================
+-- apply_discount.xfr
+-- Component: ApplyLoyaltyDiscount (node_09)
+-- Input:  enriched_order (high-value stream only)
+-- Output: enriched_order with discount_pct + final_amount set
+-- ==============================================================
+
+TRANSFORM apply_discount
+BEGIN
+    -- Pass through all fields
+    out.order_id          = in.order_id;
+    out.customer_id       = in.customer_id;
+    out.full_name         = in.full_name;
+    out.email             = in.email;
+    out.country_code      = in.country_code;
+    out.signup_date       = in.signup_date;
+    out.loyalty_points    = in.loyalty_points;
+    out.order_date        = in.order_date;
+    out.order_month       = in.order_month;
+    out.product_code      = in.product_code;
+    out.quantity          = in.quantity;
+    out.unit_price        = in.unit_price;
+    out.order_amount      = in.order_amount;
+    out.status            = in.status;
+    out.is_valid          = in.is_valid;
+    out.total_with_tax    = in.total_with_tax;
+    out.loyalty_tier      = in.loyalty_tier;
+    out.days_since_signup = in.days_since_signup;
+
+    -- Discount logic: GOLD=15%, SILVER=10%, BRONZE=5%
+    out.discount_pct = if (in.loyalty_tier = "GOLD")
+                           15.00
+                       else if (in.loyalty_tier = "SILVER")
+                           10.00
+                       else
+                           5.00;
+
+    -- Final amount after discount
+    out.final_amount = decimal(
+                           in.order_amount * (1 - (out.discount_pct / 100)),
+                           12, 2
+                       );
+END

@@ -1,0 +1,296 @@
+-- ==============================================================
+-- transaction_raw.dml
+-- Raw transaction input — as it arrives from source system
+-- ==============================================================
+DEFINE transaction_raw
+BEGIN
+    txn_id              string(36)          NOT NULL;   -- UUID
+    account_id          string(20)          NOT NULL;
+    txn_timestamp       string(23)          NOT NULL;   -- "YYYY-MM-DD HH:MM:SS.mmm"
+    txn_type            string(20)          NOT NULL;   -- TRANSFER | PAYMENT | WITHDRAWAL | DEPOSIT | FX
+    txn_amount          decimal(15,2)       NOT NULL;
+    txn_currency        string(3)           NOT NULL;   -- ISO 4217
+    merchant_id         string(30)          NULL;
+    merchant_country    string(2)           NULL;       -- ISO 3166-1 alpha-2
+    channel             string(15)          NOT NULL;   -- ONLINE | ATM | POS | MOBILE | BRANCH
+    txn_status          string(15)          NOT NULL;   -- COMPLETED | PENDING | CANCELLED | FAILED | TEST
+    reference_txn_id    string(36)          NULL;       -- for reversals/refunds
+    ip_address          string(45)          NULL;
+    device_fingerprint  string(64)          NULL;
+    raw_payload         string(2000)        NULL;       -- original JSON blob (for audit)
+END
+
+
+-- ==============================================================
+-- transaction_normalized.dml
+-- After NormalizeTransaction Reformat
+-- ==============================================================
+DEFINE transaction_normalized
+BEGIN
+    txn_id              string(36)          NOT NULL;
+    account_id          string(20)          NOT NULL;
+    txn_timestamp       datetime            NOT NULL;   -- cast from string
+    txn_date            date                NOT NULL;   -- derived from txn_timestamp
+    txn_month           string(7)           NOT NULL;   -- derived: "YYYY-MM"
+    txn_hour            integer             NOT NULL;   -- derived: 0–23
+    txn_type            string(20)          NOT NULL;
+    txn_amount          decimal(15,2)       NOT NULL;
+    txn_currency        string(3)           NOT NULL;
+    merchant_id         string(30)          NULL;
+    merchant_country    string(2)           NULL;
+    is_cross_border     integer             NOT NULL;   -- derived: merchant_country != account_country
+    is_large_txn        integer             NOT NULL;   -- derived: txn_amount >= 10000
+    is_off_hours        integer             NOT NULL;   -- derived: txn_hour < 6 OR txn_hour >= 22
+    channel             string(15)          NOT NULL;
+    txn_status          string(15)          NOT NULL;
+    reference_txn_id    string(36)          NULL;
+    ip_address          string(45)          NULL;
+    device_fingerprint  string(64)          NULL;
+END
+
+
+-- ==============================================================
+-- account_raw.dml
+-- Raw account master — as loaded from core banking system
+-- ==============================================================
+DEFINE account_raw
+BEGIN
+    account_id          string(20)          NOT NULL;
+    account_holder_name string(100)         NOT NULL;
+    account_type        string(15)          NOT NULL;   -- CURRENT | SAVINGS | BUSINESS | INVESTMENT
+    account_country     string(2)           NOT NULL;
+    account_status      string(10)          NOT NULL;   -- ACTIVE | SUSPENDED | DORMANT | CLOSED
+    open_date           string(10)          NOT NULL;   -- "YYYY-MM-DD"
+    kyc_status          string(10)          NOT NULL;   -- VERIFIED | PENDING | FAILED | EXPIRED
+    credit_limit        decimal(15,2)       NULL;
+    average_balance     decimal(15,2)       NULL;
+    relationship_tier   string(10)          NULL;       -- STANDARD | SILVER | GOLD | PLATINUM
+END
+
+
+-- ==============================================================
+-- account_normalized.dml
+-- After NormalizeAccount Reformat
+-- ==============================================================
+DEFINE account_normalized
+BEGIN
+    account_id          string(20)          NOT NULL;
+    account_holder_name string(100)         NOT NULL;
+    account_type        string(15)          NOT NULL;
+    account_country     string(2)           NOT NULL;
+    account_status      string(10)          NOT NULL;
+    open_date           date                NOT NULL;   -- cast from string
+    account_age_days    integer             NOT NULL;   -- derived: today - open_date
+    kyc_status          string(10)          NOT NULL;
+    is_kyc_valid        integer             NOT NULL;   -- 1 if VERIFIED, else 0
+    credit_limit        decimal(15,2)       NULL;
+    average_balance     decimal(15,2)       NULL;
+    account_tier        string(10)          NOT NULL;   -- normalized from relationship_tier
+END
+
+
+-- ==============================================================
+-- risk_rules.dml
+-- Lookup table: base risk scores per txn_type + account_tier
+-- Small dimension table — will be broadcast in join
+-- ==============================================================
+DEFINE risk_rules
+BEGIN
+    rule_id             integer             NOT NULL;
+    txn_type            string(20)          NOT NULL;
+    account_tier        string(10)          NOT NULL;
+    base_risk_score     integer             NOT NULL;   -- 0–100
+    velocity_weight     decimal(5,4)        NOT NULL;   -- multiplier for velocity score
+    amount_weight       decimal(5,4)        NOT NULL;   -- multiplier for amount score
+    rule_description    string(200)         NULL;
+END
+
+
+-- ==============================================================
+-- txn_account_enriched.dml
+-- After JoinTxnAccount (left join on account_id)
+-- ==============================================================
+DEFINE txn_account_enriched
+BEGIN
+    txn_id              string(36)          NOT NULL;
+    account_id          string(20)          NOT NULL;
+    txn_timestamp       datetime            NOT NULL;
+    txn_date            date                NOT NULL;
+    txn_month           string(7)           NOT NULL;
+    txn_hour            integer             NOT NULL;
+    txn_type            string(20)          NOT NULL;
+    txn_amount          decimal(15,2)       NOT NULL;
+    txn_currency        string(3)           NOT NULL;
+    merchant_id         string(30)          NULL;
+    merchant_country    string(2)           NULL;
+    is_cross_border     integer             NOT NULL;
+    is_large_txn        integer             NOT NULL;
+    is_off_hours        integer             NOT NULL;
+    channel             string(15)          NOT NULL;
+    txn_status          string(15)          NOT NULL;
+    reference_txn_id    string(36)          NULL;
+    ip_address          string(45)          NULL;
+    device_fingerprint  string(64)          NULL;
+    -- from account (nullable: left join may not match)
+    account_holder_name string(100)         NULL;
+    account_type        string(15)          NULL;
+    account_country     string(2)           NULL;
+    account_status      string(10)          NULL;
+    account_age_days    integer             NULL;
+    kyc_status          string(10)          NULL;
+    is_kyc_valid        integer             NULL;
+    credit_limit        decimal(15,2)       NULL;
+    average_balance     decimal(15,2)       NULL;
+    account_tier        string(10)          NULL;
+END
+
+
+-- ==============================================================
+-- txn_risk_enriched.dml
+-- After JoinRiskRules + ComputeVelocity (window transform)
+-- ==============================================================
+DEFINE txn_risk_enriched
+BEGIN
+    txn_id              string(36)          NOT NULL;
+    account_id          string(20)          NOT NULL;
+    txn_timestamp       datetime            NOT NULL;
+    txn_date            date                NOT NULL;
+    txn_month           string(7)           NOT NULL;
+    txn_hour            integer             NOT NULL;
+    txn_type            string(20)          NOT NULL;
+    txn_amount          decimal(15,2)       NOT NULL;
+    txn_currency        string(3)           NOT NULL;
+    merchant_id         string(30)          NULL;
+    merchant_country    string(2)           NULL;
+    is_cross_border     integer             NOT NULL;
+    is_large_txn        integer             NOT NULL;
+    is_off_hours        integer             NOT NULL;
+    channel             string(15)          NOT NULL;
+    txn_status          string(15)          NOT NULL;
+    reference_txn_id    string(36)          NULL;
+    ip_address          string(45)          NULL;
+    device_fingerprint  string(64)          NULL;
+    account_holder_name string(100)         NULL;
+    account_type        string(15)          NULL;
+    account_country     string(2)           NULL;
+    account_status      string(10)          NULL;
+    account_age_days    integer             NULL;
+    kyc_status          string(10)          NULL;
+    is_kyc_valid        integer             NULL;
+    credit_limit        decimal(15,2)       NULL;
+    average_balance     decimal(15,2)       NULL;
+    account_tier        string(10)          NULL;
+    -- from risk rules (nullable: left join)
+    base_risk_score     integer             NULL;
+    velocity_weight     decimal(5,4)        NULL;
+    amount_weight       decimal(5,4)        NULL;
+    -- from velocity window
+    velocity_txn_count  integer             NOT NULL;   -- txns in last 24h for account
+    velocity_txn_volume decimal(15,2)       NOT NULL;   -- sum of amounts in last 24h
+END
+
+
+-- ==============================================================
+-- txn_scored.dml
+-- After ComputeRiskScore Reformat — final scored record
+-- FAN-OUT NODE: feeds FilterHighRisk, FilterClean, AggRegulatoryReport
+-- ==============================================================
+DEFINE txn_scored
+BEGIN
+    txn_id              string(36)          NOT NULL;
+    account_id          string(20)          NOT NULL;
+    txn_timestamp       datetime            NOT NULL;
+    txn_date            date                NOT NULL;
+    txn_month           string(7)           NOT NULL;
+    txn_hour            integer             NOT NULL;
+    txn_type            string(20)          NOT NULL;
+    txn_amount          decimal(15,2)       NOT NULL;
+    txn_currency        string(3)           NOT NULL;
+    merchant_id         string(30)          NULL;
+    merchant_country    string(2)           NULL;
+    is_cross_border     integer             NOT NULL;
+    is_large_txn        integer             NOT NULL;
+    is_off_hours        integer             NOT NULL;
+    channel             string(15)          NOT NULL;
+    account_holder_name string(100)         NULL;
+    account_country     string(2)           NULL;
+    account_tier        string(10)          NULL;
+    is_kyc_valid        integer             NULL;
+    account_age_days    integer             NULL;
+    velocity_txn_count  integer             NOT NULL;
+    velocity_txn_volume decimal(15,2)       NOT NULL;
+    -- computed scores
+    velocity_score      integer             NOT NULL;   -- 0–100 derived from velocity
+    amount_score        integer             NOT NULL;   -- 0–100 derived from amount
+    risk_score          integer             NOT NULL;   -- composite 0–100
+    risk_band           string(10)          NOT NULL;   -- LOW / MEDIUM / HIGH / CRITICAL
+END
+
+
+-- ==============================================================
+-- txn_flagged.dml
+-- After EnrichFlaggedAlerts Reformat (HIGH_RISK path only)
+-- FAN-OUT: feeds FlaggedOutput and AggregateBlockedAccounts
+-- ==============================================================
+DEFINE txn_flagged
+BEGIN
+    txn_id              string(36)          NOT NULL;
+    account_id          string(20)          NOT NULL;
+    txn_timestamp       datetime            NOT NULL;
+    txn_month           string(7)           NOT NULL;
+    txn_type            string(20)          NOT NULL;
+    txn_amount          decimal(15,2)       NOT NULL;
+    txn_currency        string(3)           NOT NULL;
+    merchant_country    string(2)           NULL;
+    is_cross_border     integer             NOT NULL;
+    channel             string(15)          NOT NULL;
+    account_holder_name string(100)         NULL;
+    account_country     string(2)           NULL;
+    account_tier        string(10)          NULL;
+    risk_score          integer             NOT NULL;
+    risk_band           string(10)          NOT NULL;
+    velocity_txn_count  integer             NOT NULL;
+    velocity_txn_volume decimal(15,2)       NOT NULL;
+    -- alert metadata (added by EnrichFlaggedAlerts)
+    alert_code          string(15)          NOT NULL;   -- AML_001 | VELOCITY | CROSS_BORDER | LARGE_TXN
+    alert_reason        string(300)         NOT NULL;
+    review_priority     string(10)          NOT NULL;   -- URGENT | HIGH | MEDIUM
+    generated_at        datetime            NOT NULL;
+END
+
+
+-- ==============================================================
+-- blocked_account_summary.dml
+-- Output of AggregateBlockedAccounts
+-- ==============================================================
+DEFINE blocked_account_summary
+BEGIN
+    account_id              string(20)      NOT NULL;
+    account_holder_name     string(100)     NULL;
+    account_country         string(2)       NULL;
+    high_risk_txn_count     integer         NOT NULL;
+    max_risk_score          integer         NOT NULL;
+    total_flagged_amount    decimal(15,2)   NOT NULL;
+    last_flagged_at         datetime        NOT NULL;
+END
+
+
+-- ==============================================================
+-- regulatory_report.dml
+-- Output of AggregateRegulatoryReport + StampRegulatoryReport
+-- ==============================================================
+DEFINE regulatory_report
+BEGIN
+    report_date         date                NOT NULL;   -- stamped by StampRegulatoryReport
+    institution_code    string(20)          NOT NULL;   -- stamped by StampRegulatoryReport
+    txn_month           string(7)           NOT NULL;
+    account_country     string(2)           NOT NULL;
+    txn_type            string(20)          NOT NULL;
+    total_txn_count     integer             NOT NULL;
+    total_txn_volume    decimal(18,2)       NOT NULL;
+    flagged_count       integer             NOT NULL;
+    flagged_rate_pct    decimal(6,3)        NOT NULL;   -- derived in stamp: flagged/total*100
+    avg_risk_score      decimal(6,3)        NOT NULL;
+    max_single_txn      decimal(15,2)       NOT NULL;
+    submission_ts       datetime            NOT NULL;   -- stamped: current_timestamp
+END

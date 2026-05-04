@@ -1,0 +1,381 @@
+-- ==============================================================
+-- normalize_transaction.xfr
+-- Component: NormalizeTransaction (node_04)
+-- Input:  transaction_raw
+-- Output: transaction_normalized
+-- ==============================================================
+
+TRANSFORM normalize_transaction
+BEGIN
+    out.txn_id           = trim(in.txn_id);
+    out.account_id       = trim(in.account_id);
+    out.txn_type         = upper(trim(in.txn_type));
+    out.txn_currency     = upper(trim(in.txn_currency));
+    out.channel          = upper(trim(in.channel));
+    out.txn_status       = upper(trim(in.txn_status));
+    out.txn_amount       = in.txn_amount;
+    out.merchant_id      = if (is_null(in.merchant_id)) null else trim(in.merchant_id);
+    out.merchant_country = if (is_null(in.merchant_country)) null else upper(trim(in.merchant_country));
+    out.reference_txn_id = in.reference_txn_id;
+    out.ip_address       = in.ip_address;
+    out.device_fingerprint = in.device_fingerprint;
+
+    -- Cast timestamp string to datetime
+    out.txn_timestamp = string_to_datetime(in.txn_timestamp, "YYYY-MM-DD HH:MM:SS.mmm");
+
+    -- Derive date and month
+    out.txn_date  = date_trunc(out.txn_timestamp, "day");
+    out.txn_month = date_format(out.txn_timestamp, "YYYY-MM");
+
+    -- Extract hour (0–23) for off-hours detection
+    out.txn_hour = date_part(out.txn_timestamp, "hour");
+
+    -- Cross-border flag: merchant_country differs from account country
+    -- Note: account_country not available here; is_cross_border is finalized post-join
+    -- Interim: flag if merchant_country is non-null (finalized by JoinTxnAccount)
+    out.is_cross_border = if (is_null(in.merchant_country)) 0 else 1;
+
+    -- Large transaction flag
+    out.is_large_txn = if (in.txn_amount >= 10000.00) 1 else 0;
+
+    -- Off-hours flag: before 6am or after 10pm
+    out.is_off_hours = if (out.txn_hour < 6 or out.txn_hour >= 22) 1 else 0;
+END
+
+
+-- ==============================================================
+-- normalize_account.xfr
+-- Component: NormalizeAccount (node_05)
+-- Input:  account_raw
+-- Output: account_normalized
+-- ==============================================================
+
+TRANSFORM normalize_account
+BEGIN
+    out.account_id          = trim(in.account_id);
+    out.account_holder_name = trim(in.account_holder_name);
+    out.account_type        = upper(trim(in.account_type));
+    out.account_country     = upper(trim(in.account_country));
+    out.account_status      = upper(trim(in.account_status));
+    out.kyc_status          = upper(trim(in.kyc_status));
+    out.credit_limit        = in.credit_limit;
+    out.average_balance     = in.average_balance;
+
+    -- Cast open_date string to date
+    out.open_date = string_to_date(in.open_date, "YYYY-MM-DD");
+
+    -- Account age in days from today
+    out.account_age_days = date_diff(current_date(), out.open_date, "days");
+
+    -- KYC validity flag
+    out.is_kyc_valid = if (in.kyc_status = "VERIFIED") 1 else 0;
+
+    -- Normalize relationship_tier: default STANDARD if null
+    out.account_tier = if (is_null(in.relationship_tier) or string_length(trim(in.relationship_tier)) = 0)
+                           "STANDARD"
+                       else
+                           upper(trim(in.relationship_tier));
+END
+
+
+-- ==============================================================
+-- filter_active_accounts.xfr
+-- Component: FilterActiveAccounts (node_06)
+-- Passes accounts WHERE status != CLOSED
+-- ==============================================================
+
+FILTER filter_active_accounts
+BEGIN
+    CONDITION: in.account_status != "CLOSED";
+END
+
+
+-- ==============================================================
+-- filter_valid_transactions.xfr
+-- Component: FilterValidTransactions (node_07)
+-- Passes non-CANCELLED, non-TEST transactions with positive amount
+-- ==============================================================
+
+FILTER filter_valid_transactions
+BEGIN
+    CONDITION: in.txn_status != "CANCELLED"
+           and in.txn_status != "TEST"
+           and in.txn_status != "FAILED"
+           and in.txn_amount > 0;
+END
+
+
+-- ==============================================================
+-- compute_velocity.xfr
+-- Component: ComputeVelocity (node_10)
+-- Window: PARTITION BY account_id ORDER BY txn_timestamp
+--         RANGE BETWEEN INTERVAL 24 HOURS PRECEDING AND CURRENT ROW
+-- Input:  txn_risk_enriched (post second join)
+-- Output: txn_risk_enriched (with velocity columns added)
+-- ==============================================================
+
+TRANSFORM compute_velocity
+BEGIN
+    -- All existing fields passed through
+    out.txn_id              = in.txn_id;
+    out.account_id          = in.account_id;
+    out.txn_timestamp       = in.txn_timestamp;
+    out.txn_date            = in.txn_date;
+    out.txn_month           = in.txn_month;
+    out.txn_hour            = in.txn_hour;
+    out.txn_type            = in.txn_type;
+    out.txn_amount          = in.txn_amount;
+    out.txn_currency        = in.txn_currency;
+    out.merchant_id         = in.merchant_id;
+    out.merchant_country    = in.merchant_country;
+    out.is_cross_border     = in.is_cross_border;
+    out.is_large_txn        = in.is_large_txn;
+    out.is_off_hours        = in.is_off_hours;
+    out.channel             = in.channel;
+    out.txn_status          = in.txn_status;
+    out.reference_txn_id    = in.reference_txn_id;
+    out.ip_address          = in.ip_address;
+    out.device_fingerprint  = in.device_fingerprint;
+    out.account_holder_name = in.account_holder_name;
+    out.account_type        = in.account_type;
+    out.account_country     = in.account_country;
+    out.account_status      = in.account_status;
+    out.account_age_days    = in.account_age_days;
+    out.kyc_status          = in.kyc_status;
+    out.is_kyc_valid        = in.is_kyc_valid;
+    out.credit_limit        = in.credit_limit;
+    out.average_balance     = in.average_balance;
+    out.account_tier        = in.account_tier;
+    out.base_risk_score     = in.base_risk_score;
+    out.velocity_weight     = in.velocity_weight;
+    out.amount_weight       = in.amount_weight;
+
+    -- Velocity: count of transactions in rolling 24-hour window per account
+    out.velocity_txn_count = window_count(
+        partition_by = account_id,
+        order_by     = txn_timestamp,
+        range        = "-24h to current"
+    );
+
+    -- Velocity: sum of amounts in rolling 24-hour window per account
+    out.velocity_txn_volume = window_sum(
+        expr         = txn_amount,
+        partition_by = account_id,
+        order_by     = txn_timestamp,
+        range        = "-24h to current"
+    );
+END
+
+
+-- ==============================================================
+-- compute_risk_score.xfr
+-- Component: ComputeRiskScore (node_11)
+-- Input:  txn_risk_enriched (with velocity columns)
+-- Output: txn_scored
+-- FAN-OUT: this node feeds 3 downstream paths
+-- ==============================================================
+
+TRANSFORM compute_risk_score
+BEGIN
+    -- Pass-through fields needed downstream
+    out.txn_id              = in.txn_id;
+    out.account_id          = in.account_id;
+    out.txn_timestamp       = in.txn_timestamp;
+    out.txn_date            = in.txn_date;
+    out.txn_month           = in.txn_month;
+    out.txn_hour            = in.txn_hour;
+    out.txn_type            = in.txn_type;
+    out.txn_amount          = in.txn_amount;
+    out.txn_currency        = in.txn_currency;
+    out.merchant_id         = in.merchant_id;
+    out.merchant_country    = in.merchant_country;
+    out.is_cross_border     = in.is_cross_border;
+    out.is_large_txn        = in.is_large_txn;
+    out.is_off_hours        = in.is_off_hours;
+    out.channel             = in.channel;
+    out.account_holder_name = in.account_holder_name;
+    out.account_country     = in.account_country;
+    out.account_tier        = in.account_tier;
+    out.is_kyc_valid        = in.is_kyc_valid;
+    out.account_age_days    = in.account_age_days;
+    out.velocity_txn_count  = in.velocity_txn_count;
+    out.velocity_txn_volume = in.velocity_txn_volume;
+
+    -- Velocity score: 0–100 based on txn count in 24h window
+    --   0–2 txns = 0, 3–5 = 25, 6–10 = 50, 11–20 = 75, >20 = 100
+    out.velocity_score = if (in.velocity_txn_count <= 2)
+                             0
+                         else if (in.velocity_txn_count <= 5)
+                             25
+                         else if (in.velocity_txn_count <= 10)
+                             50
+                         else if (in.velocity_txn_count <= 20)
+                             75
+                         else
+                             100;
+
+    -- Amount score: 0–100 based on txn_amount vs credit_limit or thresholds
+    --   < 1000 = 0, 1000–4999 = 20, 5000–9999 = 40, 10000–49999 = 70, >= 50000 = 100
+    out.amount_score = if (in.txn_amount < 1000.00)
+                           0
+                       else if (in.txn_amount < 5000.00)
+                           20
+                       else if (in.txn_amount < 10000.00)
+                           40
+                       else if (in.txn_amount < 50000.00)
+                           70
+                       else
+                           100;
+
+    -- Composite risk score:
+    --   base_risk_score (from rules lookup) * 0.4
+    --   + velocity_score * velocity_weight (from rules, default 0.35)
+    --   + amount_score   * amount_weight   (from rules, default 0.25)
+    -- Clamped to [0, 100], rounded to nearest integer
+    out.risk_score = round(
+        min(100,
+            max(0,
+                (if (is_null(in.base_risk_score)) 50 else in.base_risk_score) * 0.4
+                + out.velocity_score * (if (is_null(in.velocity_weight)) 0.35 else in.velocity_weight)
+                + out.amount_score   * (if (is_null(in.amount_weight))   0.25 else in.amount_weight)
+            )
+        ),
+        0
+    );
+
+    -- Risk band classification
+    out.risk_band = if (out.risk_score >= 90)
+                        "CRITICAL"
+                    else if (out.risk_score >= 75)
+                        "HIGH"
+                    else if (out.risk_score >= 40)
+                        "MEDIUM"
+                    else
+                        "LOW";
+END
+
+
+-- ==============================================================
+-- filter_high_risk.xfr
+-- Component: FilterHighRisk (node_12)
+-- Passes records WHERE risk_score >= 75
+-- ==============================================================
+
+FILTER filter_high_risk
+BEGIN
+    CONDITION: in.risk_score >= 75;
+END
+
+
+-- ==============================================================
+-- filter_clean.xfr
+-- Component: FilterClean (node_13)
+-- Passes records WHERE risk_score < 75
+-- ==============================================================
+
+FILTER filter_clean
+BEGIN
+    CONDITION: in.risk_score < 75;
+END
+
+
+-- ==============================================================
+-- enrich_flagged_alerts.xfr
+-- Component: EnrichFlaggedAlerts (node_14)
+-- Input:  txn_scored (high-risk stream only)
+-- Output: txn_flagged
+-- FAN-OUT: feeds FlaggedOutput and AggregateBlockedAccounts
+-- ==============================================================
+
+TRANSFORM enrich_flagged_alerts
+BEGIN
+    -- Pass through core fields
+    out.txn_id              = in.txn_id;
+    out.account_id          = in.account_id;
+    out.txn_timestamp       = in.txn_timestamp;
+    out.txn_month           = in.txn_month;
+    out.txn_type            = in.txn_type;
+    out.txn_amount          = in.txn_amount;
+    out.txn_currency        = in.txn_currency;
+    out.merchant_country    = in.merchant_country;
+    out.is_cross_border     = in.is_cross_border;
+    out.channel             = in.channel;
+    out.account_holder_name = in.account_holder_name;
+    out.account_country     = in.account_country;
+    out.account_tier        = in.account_tier;
+    out.risk_score          = in.risk_score;
+    out.risk_band           = in.risk_band;
+    out.velocity_txn_count  = in.velocity_txn_count;
+    out.velocity_txn_volume = in.velocity_txn_volume;
+
+    -- Alert code: pick the dominant risk signal
+    out.alert_code = if (in.velocity_txn_count > 20 and in.is_cross_border = 1)
+                         "AML_001"
+                     else if (in.velocity_txn_count > 10)
+                         "VELOCITY"
+                     else if (in.is_cross_border = 1 and in.txn_amount >= 10000.00)
+                         "CROSS_BORDER"
+                     else
+                         "LARGE_TXN";
+
+    -- Alert reason: human-readable description
+    out.alert_reason = if (out.alert_code = "AML_001")
+                           "Cross-border velocity: " + string(in.velocity_txn_count)
+                           + " transactions in 24h totalling " + string(in.velocity_txn_volume)
+                       else if (out.alert_code = "VELOCITY")
+                           "Unusual velocity: " + string(in.velocity_txn_count)
+                           + " transactions in 24h"
+                       else if (out.alert_code = "CROSS_BORDER")
+                           "Cross-border large transaction: "
+                           + string(in.txn_amount) + " " + in.txn_currency
+                           + " to " + if (is_null(in.merchant_country)) "UNKNOWN" else in.merchant_country
+                       else
+                           "Large transaction: " + string(in.txn_amount) + " " + in.txn_currency;
+
+    -- Review priority based on risk band
+    out.review_priority = if (in.risk_band = "CRITICAL")
+                              "URGENT"
+                          else if (in.risk_band = "HIGH")
+                              "HIGH"
+                          else
+                              "MEDIUM";
+
+    -- Audit timestamp
+    out.generated_at = current_datetime();
+END
+
+
+-- ==============================================================
+-- stamp_regulatory_report.xfr
+-- Component: StampRegulatoryReport (node_17)
+-- Input:  regulatory_report (post-aggregate)
+-- Output: regulatory_report (with report metadata stamped)
+-- ==============================================================
+
+TRANSFORM stamp_regulatory_report
+BEGIN
+    -- Pass through all aggregated fields
+    out.txn_month           = in.txn_month;
+    out.account_country     = in.account_country;
+    out.txn_type            = in.txn_type;
+    out.total_txn_count     = in.total_txn_count;
+    out.total_txn_volume    = in.total_txn_volume;
+    out.flagged_count       = in.flagged_count;
+    out.avg_risk_score      = in.avg_risk_score;
+    out.max_single_txn      = in.max_single_txn;
+
+    -- Stamp report date from pipeline parameter
+    out.report_date = string_to_date("${REPORT_DATE}", "YYYY-MM-DD");
+
+    -- Hardcoded institution code (would be parameterized per deployment)
+    out.institution_code = "FIN_INST_001";
+
+    -- Derived: flagged rate as a percentage
+    out.flagged_rate_pct = if (in.total_txn_count = 0)
+                               0.000
+                           else
+                               decimal(in.flagged_count * 100.0 / in.total_txn_count, 6, 3);
+
+    -- Submission timestamp
+    out.submission_ts = current_datetime();
+END

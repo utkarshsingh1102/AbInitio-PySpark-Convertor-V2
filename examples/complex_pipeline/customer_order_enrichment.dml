@@ -1,0 +1,108 @@
+-- ==============================================================
+-- customer.dml
+-- Raw customer input schema
+-- ==============================================================
+DEFINE customer_raw
+BEGIN
+    customer_id     integer             NOT NULL;
+    first_name      string(50)          NOT NULL;
+    last_name       string(50)          NOT NULL;
+    email           string(100)         NOT NULL;
+    country         string(50)          NULL;
+    signup_date     string(10)          NOT NULL;    -- raw: "YYYY-MM-DD"
+    loyalty_points  integer             NULL;
+END
+
+
+-- ==============================================================
+-- customer_normalized.dml
+-- After NormalizeCustomer Reformat
+-- ==============================================================
+DEFINE customer_normalized
+BEGIN
+    customer_id     integer             NOT NULL;
+    full_name       string(100)         NOT NULL;    -- derived: first + last uppercased
+    email           string(100)         NOT NULL;
+    country_code    string(2)           NULL;        -- derived: ISO 2-char from country
+    signup_date     date                NOT NULL;    -- cast from string
+    loyalty_points  integer             NULL;
+END
+
+
+-- ==============================================================
+-- order_raw (order.dml)
+-- Raw order input schema
+-- ==============================================================
+DEFINE order_raw
+BEGIN
+    order_id        string(36)          NOT NULL;    -- UUID
+    customer_id     integer             NOT NULL;
+    order_date      string(19)          NOT NULL;    -- raw: "YYYY-MM-DD HH:MM:SS"
+    product_code    string(20)          NOT NULL;
+    quantity        integer             NOT NULL;
+    unit_price      decimal(10,2)       NOT NULL;
+    order_amount    decimal(12,2)       NULL;        -- may be missing; derived if null
+    status          string(20)          NOT NULL;    -- PENDING | CONFIRMED | SHIPPED | CANCELLED
+END
+
+
+-- ==============================================================
+-- order_normalized.dml
+-- After NormalizeOrder Reformat
+-- ==============================================================
+DEFINE order_normalized
+BEGIN
+    order_id        string(36)          NOT NULL;
+    customer_id     integer             NOT NULL;
+    order_date      datetime            NOT NULL;    -- cast from string
+    order_month     string(7)           NOT NULL;    -- derived: "YYYY-MM"
+    product_code    string(20)          NOT NULL;
+    quantity        integer             NOT NULL;
+    unit_price      decimal(10,2)       NOT NULL;
+    order_amount    decimal(12,2)       NOT NULL;    -- coalesced: quantity * unit_price if null
+    status          string(20)          NOT NULL;
+    is_valid        integer             NOT NULL;    -- 1 if no nulls in key fields, else 0
+END
+
+
+-- ==============================================================
+-- enriched_order.dml
+-- After JoinCustomerOrder + EnrichRecord Reformat
+-- Used also for AuditOutput
+-- ==============================================================
+DEFINE enriched_order
+BEGIN
+    order_id            string(36)      NOT NULL;
+    customer_id         integer         NOT NULL;
+    full_name           string(100)     NOT NULL;
+    email               string(100)     NOT NULL;
+    country_code        string(2)       NULL;
+    signup_date         date            NOT NULL;
+    loyalty_points      integer         NULL;
+    order_date          datetime        NOT NULL;
+    order_month         string(7)       NOT NULL;
+    product_code        string(20)      NOT NULL;
+    quantity            integer         NOT NULL;
+    unit_price          decimal(10,2)   NOT NULL;
+    order_amount        decimal(12,2)   NOT NULL;
+    status              string(20)      NOT NULL;
+    is_valid            integer         NOT NULL;
+    total_with_tax      decimal(12,2)   NOT NULL;   -- derived: order_amount * 1.18
+    loyalty_tier        string(10)      NOT NULL;   -- derived: GOLD / SILVER / BRONZE
+    days_since_signup   integer         NOT NULL;   -- derived: order_date - signup_date
+    discount_pct        decimal(5,2)    NULL;       -- populated by ApplyLoyaltyDiscount
+    final_amount        decimal(12,2)   NULL;       -- populated by ApplyLoyaltyDiscount
+END
+
+
+-- ==============================================================
+-- standard_summary.dml
+-- Output of AggregateStandard
+-- ==============================================================
+DEFINE standard_summary
+BEGIN
+    customer_id     integer             NOT NULL;
+    order_month     string(7)           NOT NULL;
+    monthly_spend   decimal(14,2)       NOT NULL;   -- sum(order_amount)
+    order_count     integer             NOT NULL;   -- count(order_id)
+END

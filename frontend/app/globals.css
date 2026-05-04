@@ -1,0 +1,75 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap");
+
+html, body {
+  height: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  background: #FAF9F5;            /* cream-100 */
+  color: #1F1E1B;                  /* ink-700 */
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "ss01", "cv11";  /* nicer Inter rendering */
+}
+
+/* React Flow handle pegs / controls - tinted to match the cream palette */
+.react-flow__controls,
+.react-flow__attribution {
+  background: #FBFAF6 !important;
+  border: 1px solid #E6E4D9 !important;
+  color: #4A4945 !important;
+  box-shadow: 0 1px 3px rgba(31, 30, 27, 0.06) !important;
+}
+.react-flow__controls-button {
+  background: transparent !important;
+  border-bottom: 1px solid #E6E4D9 !important;
+  color: #4A4945 !important;
+}
+.react-flow__controls-button:hover { background: #F5F4ED !important; }
+
+/* Subtle scrollbars on cream surfaces */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: #D9D7CB;
+  border-radius: 8px;
+  border: 2px solid #FAF9F5;
+}
+::-webkit-scrollbar-thumb:hover { background: #B8B6A8; }
+
+/* Selection */
+::selection { background: #FCEBE3; color: #1F1E1B; }
+
+/* ── Visualizer animations ────────────────────────────────────────────── */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in { animation: fadeIn 320ms ease-out both; }
+
+/* When applied to a parent, every direct child fades in with a small
+   per-child delay if it sets its own `animation-delay` style. */
+.staggered-children > * {
+  opacity: 0;
+  animation: fadeIn 320ms ease-out forwards;
+}
+
+.node-fade {
+  opacity: 0;
+  animation: fadeIn 280ms ease-out forwards;
+}
+
+@keyframes tokenPop {
+  0%   { opacity: 0; transform: scale(0.7); }
+  60%  { opacity: 1; transform: scale(1.06); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.token-chip {
+  opacity: 0;
+  animation: tokenPop 280ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}

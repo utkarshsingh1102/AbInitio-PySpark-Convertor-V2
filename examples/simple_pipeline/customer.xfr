@@ -1,0 +1,9 @@
+-- Normalize customer records: uppercase name, bump age by 1
+TRANSFORM customer_normalize
+BEGIN
+    out.customer_id = in.customer_id;
+    out.name        = upper(in.name);
+    out.age         = in.age + 1;
+    out.balance     = in.balance;
+    out.signup_date = in.signup_date;
+END

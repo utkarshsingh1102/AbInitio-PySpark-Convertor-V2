@@ -1,0 +1,9 @@
+-- Customer record schema
+DEFINE customer
+BEGIN
+    customer_id     string(20)      NOT NULL;
+    name            string(50)      NULL;
+    age             integer         NULL;
+    balance         decimal(10, 2)  NULL;
+    signup_date     date            NULL;
+END
