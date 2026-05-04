@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CodePreview } from "@/components/CodePreview";
 import { convertDml, type DmlSchemaResult } from "@/lib/api";
 
@@ -50,6 +50,19 @@ export default function PlaygroundPage() {
   const [results, setResults] = useState<DmlSchemaResult[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // The Schema → DML page can hand off DML via sessionStorage (set when the
+  // user clicks "open in DML Playground"). We read it once on mount and
+  // clear so re-visits don't keep replacing manually-pasted text.
+  useEffect(() => {
+    try {
+      const prefill = sessionStorage.getItem("playground_prefill");
+      if (prefill) {
+        setDml(prefill);
+        sessionStorage.removeItem("playground_prefill");
+      }
+    } catch {}
+  }, []);
 
   async function onConvert() {
     setBusy(true);

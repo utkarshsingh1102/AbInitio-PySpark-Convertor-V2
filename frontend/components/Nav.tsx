@@ -3,9 +3,10 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const TABS = [
-  { href: "/",           label: "Pipeline Converter" },
-  { href: "/playground", label: "DML Playground" },
-  { href: "/visualizer", label: "Pipeline Visualizer" },
+  { href: "/",            label: "Pipeline Converter" },
+  { href: "/playground",  label: "DML Playground" },
+  { href: "/to-dml",      label: "Schema → DML" },
+  { href: "/visualizer",  label: "Pipeline Visualizer" },
 ];
 
 export function Nav() {
