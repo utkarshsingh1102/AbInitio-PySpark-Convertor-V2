@@ -220,6 +220,20 @@ def _parse_item(stmt: str) -> dict[str, Any] | None:
         )
         item.update(_pic_to_field(pic_raw, comps))
     else:
+        # Differentiate "no PIC clause at all (group item)" from "PIC keyword
+        # is present but the class characters are invalid (e.g. PIC Q(5))" —
+        # the latter must raise rather than silently degrade to an empty
+        # group item, which produced broken `record { } name;` DML.
+        bad_pic_m = re.search(r"\bPIC(?:TURE)?\b", rest, re.IGNORECASE)
+        if bad_pic_m:
+            after = rest[bad_pic_m.end():].strip()
+            after = re.sub(r"^IS\s+", "", after, flags=re.IGNORECASE)
+            bad_value = after.split()[0] if after else "<empty>"
+            raise ValueError(
+                f"Unsupported PIC clause {bad_value!r} for field {name!r}. "
+                f"Valid PIC characters are 9 X A S V Z P (with optional "
+                f"parens for repetition, e.g. X(20), S9(5)V99)."
+            )
         item["is_group"] = True
     return item
 
@@ -229,6 +243,34 @@ def _parse_item(stmt: str) -> dict[str, Any] | None:
 
 def _normalize(name: str) -> str:
     return name.lower().replace("-", "_")
+
+
+def _check_duplicate_field_names(
+    fields: list[dict[str, Any]], path: str = "",
+) -> None:
+    """Reject duplicate field names at any single nesting level.
+
+    COBOL data items inside one record (one struct in the schema dict) must
+    have unique names — so two ``05 A PIC X(10).`` lines in the same record
+    is invalid input. Catching this here prevents emitting broken DML with
+    two fields of the same name.
+
+    Cross-level reuse (``05 OUTER. 10 A …`` and ``05 A …`` at the same
+    record's children) is fine and not flagged — those are separate scopes.
+    """
+    seen: dict[str, str] = {}
+    for f in fields:
+        key = f["name"].lower()
+        if key in seen:
+            scope = f" in {path!r}" if path else ""
+            raise ValueError(
+                f"Duplicate field name {f['name']!r}{scope} — "
+                f"COBOL data items at the same level must have unique names."
+            )
+        seen[key] = f["name"]
+        if f.get("type") == "struct":
+            child_path = f"{path}.{f['name']}" if path else f["name"]
+            _check_duplicate_field_names(f.get("fields", []), child_path)
 
 
 def _build_tree(items: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
@@ -331,5 +373,7 @@ def cobol_copybook_to_dml(src: str) -> dict[str, Any]:
         raise ValueError("No COBOL data items found")
 
     name, schema = _build_tree(items)
+    # Reject same-level duplicate field names (recursively into structs).
+    _check_duplicate_field_names(schema["fields"], path=name)
     dml = schema_to_dml(schema)
     return {"record_name": name, "dml": dml}
