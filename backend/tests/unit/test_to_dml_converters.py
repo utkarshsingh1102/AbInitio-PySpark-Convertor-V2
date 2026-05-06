@@ -8,7 +8,10 @@ Each converter must:
 """
 import pytest
 
-from backend.parser.cobol_to_dml import cobol_copybook_to_dml
+from backend.parser.cobol_to_dml import (
+    cobol_copybook_to_dml,
+    compute_record_byte_length,
+)
 from backend.parser.dml_parser import parse_dml_string
 from backend.parser.hive_to_dml import hive_ddl_to_dml
 from backend.parser.xml_to_dml import xml_to_dml
@@ -602,6 +605,106 @@ def test_cobol_column1_star_comments_recognized():
     out = cobol_copybook_to_dml(src)
     schema = _reparse(out["dml"])
     assert [f["name"] for f in schema["fields"]] == ["emp_id"]
+
+
+def test_cobol_pic_n_renders_as_utf8_string():
+    """`PIC N(20)` is national / UTF-16. We tag the field with the `utf8`
+    encoding prefix and store the character count; storage byte width is
+    twice that and is computed by `compute_record_byte_length`."""
+    src = """
+    01 R.
+        05 CUST-NAME-NAT PIC N(20).
+    """
+    out = cobol_copybook_to_dml(src)
+    schema = _reparse(out["dml"])
+    f = schema["fields"][0]
+    assert f["type"] == "string"
+    assert f["args"] == [20]
+    assert f["encoding"] == "utf8"
+    # 20 national chars = 40 bytes UTF-16.
+    assert compute_record_byte_length(schema) == 40
+
+
+def test_cobol_usage_comp1_renders_as_float4():
+    """`USAGE COMP-1` (no PIC) → single-precision float, 4 bytes."""
+    src = """
+    01 R.
+        05 RATE USAGE COMP-1.
+    """
+    out = cobol_copybook_to_dml(src)
+    schema = _reparse(out["dml"])
+    f = schema["fields"][0]
+    assert f["type"] == "float"
+    assert f["args"] == [4]
+
+
+def test_cobol_usage_comp2_renders_as_float8():
+    """`USAGE COMP-2` (no PIC) → double-precision float, 8 bytes."""
+    src = """
+    01 R.
+        05 PRECISE COMP-2.
+    """
+    out = cobol_copybook_to_dml(src)
+    schema = _reparse(out["dml"])
+    f = schema["fields"][0]
+    assert f["type"] == "float"
+    assert f["args"] == [8]
+
+
+def test_cobol_usage_pointer_rejected():
+    """USAGE POINTER is a runtime memory reference with no on-disk
+    representation. Reject rather than silently produce an empty group."""
+    src = """
+    01 R.
+        05 P USAGE POINTER.
+    """
+    with pytest.raises(ValueError, match="USAGE POINTER .* runtime memory"):
+        cobol_copybook_to_dml(src)
+
+
+def test_cobol_usage_index_rejected():
+    src = """
+    01 R.
+        05 IDX USAGE INDEX.
+    """
+    with pytest.raises(ValueError, match="USAGE INDEX .* runtime memory"):
+        cobol_copybook_to_dml(src)
+
+
+def test_cobol_byte_length_round_trip():
+    """For a fixed-length copybook the sum of DML field byte-widths must
+    equal the COBOL record's on-disk size. Locks in the conversion rules
+    for ascii decimal (1B/digit), packed decimal (ceil((d+1)/2)), integer
+    (declared width), string (1B/char), national (2B/char)."""
+    src = """
+    01 R.
+        05 EMP-ID    PIC 9(5).
+        05 EMP-NAME  PIC X(20).
+        05 SALARY    PIC S9(7)V99 COMP-3.
+        05 BIN-CTR   PIC 9(8) COMP.
+        05 NAT-NAME  PIC N(10).
+    """
+    out = cobol_copybook_to_dml(src)
+    schema = _reparse(out["dml"])
+    # 5 (zoned 9(5)) + 20 (X(20)) + 5 (packed 9 digits) + 4 (COMP 8 digits)
+    # + 20 (UTF-16 10 chars × 2) = 54 bytes.
+    assert compute_record_byte_length(schema) == 54
+
+
+def test_cobol_byte_length_with_arrays_and_groups():
+    """Arrays multiply by length; groups recurse."""
+    src = """
+    01 R.
+        05 ID PIC 9(5).
+        05 LINES OCCURS 3 TIMES.
+            10 CODE PIC X(2).
+            10 AMT  PIC S9(5)V99 COMP-3.
+    """
+    out = cobol_copybook_to_dml(src)
+    schema = _reparse(out["dml"])
+    # ID: 5 bytes; each LINE = 2 + ceil((7+1)/2) = 2 + 4 = 6 bytes; × 3 = 18.
+    # Total: 5 + 18 = 23.
+    assert compute_record_byte_length(schema) == 23
 
 
 def test_cobol_redefines_rejected():
