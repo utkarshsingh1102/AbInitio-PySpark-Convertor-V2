@@ -48,12 +48,21 @@ def _strip_comments(src: str) -> list[str]:
         stripped = line.lstrip()
         if not stripped:
             continue
+        # Free-format COBOL 2002+ ``*>`` comment.
         if stripped.startswith("*>"):
             continue
+        # Fixed-format ``*`` or ``/`` in column 7 (when columns 1-6 are
+        # sequence digits or spaces).
         if len(line) >= 7 and line[6] in ("*", "/"):
             seq = line[:6]
             if all(c.isdigit() or c == " " for c in seq):
                 continue
+        # Relaxed: any line whose first non-whitespace character is ``*``
+        # (and isn't a line continuation marker). Common in copybooks
+        # pasted from documentation that don't follow strict column-7
+        # placement.
+        if stripped.startswith("*"):
+            continue
         out.append(stripped)
     return out
 
@@ -206,13 +215,31 @@ def _parse_item(stmt: str) -> dict[str, Any] | None:
             "", rest, flags=re.IGNORECASE,
         ).strip()
 
-    # PIC clause
+    # PIC clause — capture the full value including edited-PIC characters
+    # (`,`, `*`, `$`, `B`) so we can reject edited PICs with a precise
+    # error rather than silently consuming a partial prefix.
     pic_m = re.search(
-        r"PIC(?:TURE)?(?:\s+IS)?\s+([0-9XSAVZP\.()/+\-]+)",
+        r"PIC(?:TURE)?(?:\s+IS)?\s+([0-9XSAVZNP\.()/+\-,*\$Bb]+)",
         rest, re.IGNORECASE,
     )
     if pic_m:
         pic_raw = pic_m.group(1)
+        # Reject edited PIC clauses (ZZ,ZZ9.99 / *** / $$.99 / XBXXX …).
+        # These mix display formatting with storage layout in a way that
+        # doesn't map to a single DML primitive — the user should pick
+        # `string(N)` with the formatted width if they want to preserve
+        # the displayed form.
+        edited_markers = set("Z*,B/$") & set(pic_raw.upper())
+        if edited_markers:
+            raise ValueError(
+                f"Edited PIC clause {pic_raw!r} is not supported for "
+                f"field {name!r} (contains edited marker(s) "
+                f"{sorted(edited_markers)}). Edited numerics like "
+                f"`ZZ,ZZ9.99` and edited alphanumerics like `XBXXX` "
+                f"cannot be mapped to a single DML primitive — use "
+                f"`PIC X(N)` with the total formatted width if you want "
+                f"to preserve the displayed form."
+            )
         rest_after = (rest[:pic_m.start()] + rest[pic_m.end():]).strip()
         comps = re.findall(
             r"\b(COMP(?:UTATIONAL)?(?:-[1-5])?|PACKED-DECIMAL|BINARY|DISPLAY|EBCDIC)\b",

@@ -567,6 +567,43 @@ def test_cobol_duplicate_across_levels_is_legal():
     assert by_name["a"]["type"] == "decimal"
 
 
+def test_cobol_edited_numeric_pic_rejected():
+    """Edited numerics (`ZZ,ZZ9.99`) mix display + storage and don't map
+    to a single DML primitive. Reject with a clear error rather than
+    silently emit `string(0)`."""
+    src = """
+    01 R.
+        05 AMOUNT PIC ZZ,ZZ9.99.
+    """
+    with pytest.raises(ValueError, match="Edited PIC clause"):
+        cobol_copybook_to_dml(src)
+
+
+def test_cobol_edited_alphanumeric_pic_rejected():
+    """`PIC XBXXX` (B = blank insertion) is edited alphanumeric — would
+    silently produce `string(1)` if not caught. Reject."""
+    src = """
+    01 R.
+        05 NAME PIC XBXXX.
+    """
+    with pytest.raises(ValueError, match="Edited PIC clause"):
+        cobol_copybook_to_dml(src)
+
+
+def test_cobol_column1_star_comments_recognized():
+    """Copybooks pasted from docs often use `*` in column 1 instead of the
+    strict column-7 fixed-format placement. Treat both as comments."""
+    src = """
+    * Leading comment
+    01 R.
+    * Inline comment before field
+        05 EMP-ID PIC 9(5).
+    """
+    out = cobol_copybook_to_dml(src)
+    schema = _reparse(out["dml"])
+    assert [f["name"] for f in schema["fields"]] == ["emp_id"]
+
+
 def test_cobol_redefines_rejected():
     src = """
     01 R. 05 A PIC X(10). 05 B REDEFINES A PIC 9(10).
