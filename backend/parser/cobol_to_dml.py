@@ -91,10 +91,10 @@ def _coalesce(lines: list[str]) -> list[str]:
 
 
 def _expand_pic(pic: str) -> str:
-    """`X(5)` → `XXXXX`, `9(3)V99` → `999V99`."""
+    """`X(5)` → `XXXXX`, `9(3)V99` → `999V99`, `N(4)` → `NNNN`."""
     def repl(m: re.Match[str]) -> str:
         return m.group(1) * int(m.group(2))
-    return re.sub(r"([X9SAVZP])\((\d+)\)", repl, pic, flags=re.IGNORECASE)
+    return re.sub(r"([X9SAVZPN])\((\d+)\)", repl, pic, flags=re.IGNORECASE)
 
 
 def _pic_to_field(pic_raw: str, comps: list[str]) -> dict[str, Any]:
@@ -104,6 +104,19 @@ def _pic_to_field(pic_raw: str, comps: list[str]) -> dict[str, Any]:
     is_packed = any(c in ("COMP-3", "COMPUTATIONAL-3", "PACKED-DECIMAL") for c in cu)
     is_binary = any(c in ("COMP", "COMPUTATIONAL", "COMP-4", "COMP-5", "BINARY") for c in cu)
     is_ebcdic = any("EBCDIC" in c for c in cu)
+
+    # National: PIC N(n) — UTF-16 / Unicode characters. We tag with the
+    # ``utf8`` encoding prefix (our generic Unicode flag); downstream
+    # readers / writers infer the actual UTF-16 storage from the COBOL
+    # context. ``args[0]`` is the character count (storage is 2× that for
+    # UTF-16, computed by `compute_record_byte_length`).
+    if "N" in pic:
+        n = pic.count("N")
+        return {
+            "type": "string", "args": [n],
+            "encoding": "utf8",
+            "origin_comment": f"PIC {pic_raw} (national, UTF-16, {n*2} bytes)",
+        }
 
     # Alphanumeric: PIC X / A
     if "X" in pic or "A" in pic:
@@ -247,6 +260,42 @@ def _parse_item(stmt: str) -> dict[str, Any] | None:
         )
         item.update(_pic_to_field(pic_raw, comps))
     else:
+        # No PIC clause matched. Try the no-PIC USAGE forms before falling
+        # through to "is_group=True" — both COMP-1/COMP-2 (floats) and
+        # USAGE POINTER are declared without a PIC.
+
+        # USAGE COMP-1 / COMP-2 → floating point. COMP-1 is single-precision
+        # (4 bytes), COMP-2 is double-precision (8 bytes).
+        comp_float_m = re.search(
+            r"\b(?:USAGE\s+(?:IS\s+)?)?COMP(?:UTATIONAL)?-([12])\b",
+            rest, re.IGNORECASE,
+        )
+        if comp_float_m:
+            width = 4 if comp_float_m.group(1) == "1" else 8
+            item.update({
+                "type": "float", "args": [width],
+                "origin_comment": f"USAGE COMP-{comp_float_m.group(1)}",
+            })
+            return item
+
+        # USAGE POINTER / INDEX / FUNCTION-POINTER / OBJECT REFERENCE are
+        # runtime memory references with no on-disk representation. Reject
+        # explicitly rather than silently degrading to an empty group item.
+        ptr_m = re.search(
+            r"USAGE\s+(?:IS\s+)?(POINTER|INDEX|FUNCTION-POINTER|"
+            r"PROGRAM-POINTER|OBJECT\s+REFERENCE)",
+            rest, re.IGNORECASE,
+        )
+        if ptr_m:
+            kind = re.sub(r"\s+", " ", ptr_m.group(1).upper())
+            raise ValueError(
+                f"USAGE {kind} for field {name!r} is a runtime memory "
+                f"reference with no on-disk representation in DML — "
+                f"this field cannot be converted. Drop the field from "
+                f"the copybook or replace with an explicit storage type "
+                f"(e.g. PIC X(8) for a fixed-width address slot)."
+            )
+
         # Differentiate "no PIC clause at all (group item)" from "PIC keyword
         # is present but the class characters are invalid (e.g. PIC Q(5))" —
         # the latter must raise rather than silently degrade to an empty
@@ -258,7 +307,7 @@ def _parse_item(stmt: str) -> dict[str, Any] | None:
             bad_value = after.split()[0] if after else "<empty>"
             raise ValueError(
                 f"Unsupported PIC clause {bad_value!r} for field {name!r}. "
-                f"Valid PIC characters are 9 X A S V Z P (with optional "
+                f"Valid PIC characters are 9 X A S V Z P N (with optional "
                 f"parens for repetition, e.g. X(20), S9(5)V99)."
             )
         item["is_group"] = True
@@ -270,6 +319,62 @@ def _parse_item(stmt: str) -> dict[str, Any] | None:
 
 def _normalize(name: str) -> str:
     return name.lower().replace("-", "_")
+
+
+def compute_record_byte_length(schema: dict[str, Any]) -> int:
+    """Sum the on-disk byte length of every field in a schema dict.
+
+    Useful for COBOL → DML round-trip verification: the total should match
+    the length of the original COBOL record for any fixed-length copybook.
+
+    Width rules (per Ab Initio / COBOL convention):
+
+      * ``string``  ascii / ebcdic   →  ``args[0]`` bytes (1 byte / char)
+      * ``string``  utf8 (national)  →  ``args[0] * 2`` bytes (UTF-16)
+      * ``integer``                  →  ``args[0]`` bytes (binary width)
+      * ``float``                    →  ``args[0]`` bytes (4 or 8)
+      * ``decimal`` ascii / ebcdic   →  ``args[0]`` bytes (zoned, 1 byte / digit)
+      * ``decimal`` packed           →  ``ceil((digits + 1) / 2)`` bytes
+      * ``struct``                   →  recursive sum of children
+      * Arrays                       →  base × ``array_length`` (variable arrays
+                                         use their declared maximum)
+
+    Variable-length arrays without a declared maximum count once.
+    """
+    return sum(_field_byte_length(f) for f in schema.get("fields", []))
+
+
+def _field_byte_length(f: dict[str, Any]) -> int:
+    base = _primitive_byte_length(f)
+    if f.get("array"):
+        n = f.get("array_length") or 1
+        return base * n
+    return base
+
+
+def _primitive_byte_length(f: dict[str, Any]) -> int:
+    t = f.get("type")
+    args = f.get("args") or []
+    encoding = f.get("encoding")
+
+    if t == "struct":
+        return sum(_field_byte_length(c) for c in f.get("fields", []))
+    if t == "string":
+        n = args[0] if args else 0
+        return n * 2 if encoding == "utf8" else n
+    if t == "integer":
+        return args[0] if args else 4
+    if t == "float":
+        return args[0] if args else 4
+    if t == "decimal":
+        digits = args[0] if args else 0
+        if encoding == "packed":
+            # Standard packed-decimal: digits + 1 sign nibble, packed two
+            # nibbles per byte. ceil((digits + 1) / 2) == (digits + 2) // 2
+            # in Python integer division.
+            return (digits + 2) // 2
+        return digits  # ascii / ebcdic / zoned: 1 byte per digit
+    return 0
 
 
 def _check_duplicate_field_names(
