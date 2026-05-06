@@ -526,6 +526,47 @@ def test_cobol_occurs_depending_on_renders_after_name():
     assert items["depends_on"] == "ctr"
 
 
+def test_cobol_unsupported_pic_class_rejected():
+    """`PIC Q(5)` uses an invalid PIC class character — reject with a clear
+    message rather than silently degrade to an empty group item."""
+    src = """
+    01 R.
+        05 BAD-FIELD PIC Q(5).
+    """
+    with pytest.raises(ValueError, match="Unsupported PIC clause"):
+        cobol_copybook_to_dml(src)
+
+
+def test_cobol_duplicate_field_names_rejected():
+    """Two data items at the same level with the same name is invalid
+    COBOL — must reject with a clear message."""
+    src = """
+    01 R.
+        05 A PIC X(10).
+        05 A PIC 9(5).
+    """
+    with pytest.raises(ValueError, match="Duplicate field name"):
+        cobol_copybook_to_dml(src)
+
+
+def test_cobol_duplicate_across_levels_is_legal():
+    """Same name at *different* nesting levels (`R.OUTER.A` vs `R.A`) is
+    fine — they live in separate scopes. Don't false-positive on those."""
+    src = """
+    01 R.
+        05 OUTER.
+            10 A PIC X(10).
+        05 A PIC 9(5).
+    """
+    out = cobol_copybook_to_dml(src)
+    schema = _reparse(out["dml"])
+    by_name = {f["name"]: f for f in schema["fields"]}
+    assert "outer" in by_name and "a" in by_name
+    inner = next(f for f in by_name["outer"]["fields"] if f["name"] == "a")
+    assert inner["type"] == "string"
+    assert by_name["a"]["type"] == "decimal"
+
+
 def test_cobol_redefines_rejected():
     src = """
     01 R. 05 A PIC X(10). 05 B REDEFINES A PIC 9(10).
